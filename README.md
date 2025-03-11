@@ -2,7 +2,7 @@
 
 [Project Website](https://autocar.zyh.science) | [Paper(TBD)]() | [![License: CC BY-NC-ND 4.0](https://img.shields.io/badge/License-CC_BY--NC--ND_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-nd/4.0/)
 
-This is the official projection repo of paper *Sparse and Transferable 3D Dynamic Vascular Reconstruction For Instantaneous Diagnosis*.
+This is the official project repo of paper *Sparse and Transferable 3D Dynamic Vascular Reconstruction For Instantaneous Diagnosis*.
 <!-- | [Static 3D Viewer](https://zhuyh19-autocar-synthetic-data-preview.static.hf.space) | [Dynamic 3D Viewer](https://autocar.zyh.science/dynamic_full.html) 
 <video height="512" controls autoplay>
     <source src="teaser.mp4" type="video/mp4" >
