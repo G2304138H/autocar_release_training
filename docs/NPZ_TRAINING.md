@@ -439,6 +439,15 @@ Resume with `--checkpoint /absolute/path/to/last.ckpt`. Start with
 `--num-workers 0`; after the first successful epoch, a small positive value can
 be benchmarked if the cluster's shared-memory limits permit it.
 
+With the required micro-batch size of one, each data-loader batch is one case;
+there are therefore 602 training batches in an epoch for a 602-case training
+split. Gradient accumulation performs one optimizer update per four cases but
+does not change that count. Validation and test print the current case ID and
+projection path for every batch. Any training, validation, or test exception is
+re-raised with its phase, one-based epoch and batch numbers, case ID, and input
+path. Non-finite sparse logits or losses are rejected immediately so numerical
+failure is attributed to the first batch where it is observed.
+
 For a one-batch end-to-end CUDA check, use the dedicated GPU debug profile:
 
 ```bash

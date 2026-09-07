@@ -121,6 +121,10 @@ class AutoCARVoxelLit(LightningModule):
                 "Sparse backward projection produced no supported voxels; "
                 "check camera geometry, masks, and support_views."
             )
+        if not torch.isfinite(logits).all():
+            raise FloatingPointError(
+                "The reconstruction network produced non-finite sparse logits."
+            )
         targets, valid_targets = self._sample_voxel_targets(prediction, batch)
         if not torch.any(valid_targets):
             raise RuntimeError(
@@ -135,6 +139,13 @@ class AutoCARVoxelLit(LightningModule):
             float(self.hparams.bce_weight) * loss_bce
             + float(self.hparams.dice_weight) * loss_dice
         )
+        for name, value in (
+            ("BCE loss", loss_bce),
+            ("Dice loss", loss_dice),
+            ("combined loss", loss),
+        ):
+            if not torch.isfinite(value).all():
+                raise FloatingPointError(f"The {name} is non-finite.")
         return (
             loss,
             loss_bce,
@@ -144,7 +155,53 @@ class AutoCARVoxelLit(LightningModule):
             valid_targets,
         )
 
+    @staticmethod
+    def _batch_identity(batch: Dict[str, Any]) -> str:
+        """Format case and source paths for progress and failure messages."""
+
+        def values(key: str) -> tuple[str, ...]:
+            raw = batch.get(key, "<missing>")
+            if isinstance(raw, str):
+                return (raw,)
+            if isinstance(raw, torch.Tensor):
+                raw = raw.detach().cpu()
+                if raw.ndim == 0:
+                    return (str(raw.item()),)
+                return tuple(str(item) for item in raw.tolist())
+            try:
+                return tuple(str(item) for item in raw)
+            except TypeError:
+                return (str(raw),)
+
+        case_ids = values("case_id")
+        projection_paths = values("projection_path")
+        return (
+            f"case_id={case_ids[0]!r}, projection_path={projection_paths[0]!r}"
+            if len(case_ids) == len(projection_paths) == 1
+            else f"case_ids={case_ids!r}, projection_paths={projection_paths!r}"
+        )
+
+    def _raise_step_failure(
+        self,
+        phase: str,
+        batch: Dict[str, Any],
+        batch_idx: int,
+        error: Exception,
+    ) -> None:
+        identity = self._batch_identity(batch)
+        raise RuntimeError(
+            f"{phase} failed at epoch={self.current_epoch + 1}, "
+            f"batch={batch_idx + 1}, {identity}: "
+            f"{type(error).__name__}: {error}"
+        ) from error
+
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
+        try:
+            return self._training_step(batch, batch_idx)
+        except Exception as error:
+            self._raise_step_failure("training", batch, batch_idx, error)
+
+    def _training_step(self, batch: Dict[str, Any], batch_idx: int):
         (
             loss,
             loss_bce,
@@ -329,10 +386,29 @@ class AutoCARVoxelLit(LightningModule):
             )
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> None:
-        self._evaluation_step(batch, "val")
+        phase = "validation"
+        if getattr(self.trainer, "sanity_checking", False):
+            phase = "validation sanity check"
+        self.print(
+            f"[AutoCAR] {phase}: epoch={self.current_epoch + 1}, "
+            f"batch={batch_idx + 1}, {self._batch_identity(batch)}",
+            flush=True,
+        )
+        try:
+            self._evaluation_step(batch, "val")
+        except Exception as error:
+            self._raise_step_failure(phase, batch, batch_idx, error)
 
     def test_step(self, batch: Dict[str, Any], batch_idx: int) -> None:
-        self._evaluation_step(batch, "test")
+        self.print(
+            f"[AutoCAR] test: epoch={self.current_epoch + 1}, "
+            f"batch={batch_idx + 1}, {self._batch_identity(batch)}",
+            flush=True,
+        )
+        try:
+            self._evaluation_step(batch, "test")
+        except Exception as error:
+            self._raise_step_failure("test", batch, batch_idx, error)
 
     def configure_optimizers(self) -> Dict[str, Any]:
         optimizer = self.hparams.optimizer(params=self.parameters())
