@@ -544,13 +544,23 @@ files, a resolved configuration, and an audited evaluation record.
 
 `evaluation_mode: "paper_metric"` writes per-case JSON/CSV, aggregate macro
 mean/standard-error and micro Dice summaries, and a split comparison chart
-under `metrics/`. `evaluation_mode: "visualisation"` writes an input-view
-panel, orthogonal probability/GT overlays, an optional rotating 3D GIF, case
-metrics, and an artifact manifest under
+under `metrics/`. As in the parametric evaluator, it resamples native GT and
+the thresholded prediction onto an endpoint-aligned `128 x 128 x 128` grid
+covering the full native CT field of view. The comparison masks are saved under
+`metrics/voxel_masks/` when `paper_metric_save_masks` is true. The original
+full-resolution AutoCAR probability grid is always retained under
+`predictions/`. `evaluation_mode: "visualisation"` writes an input-view panel,
+orthogonal probability/GT overlays, an optional rotating 3D GIF, case metrics,
+and an artifact manifest under
 `visualization/<case_id>/<split>/final/`. Use `max_visualizations` to cap these
 bundles without limiting prediction or metric generation. Set
 `visualization_gif_frames` to `0` to skip GIF rendering while retaining the
 static monitor images.
+
+For split manifests that contain ImageCAS source paths (rather than already
+normalized IDs), set `case_id_mode` to `"imagecas_numeric"`. Set
+`expected_imager_pixel_spacing_mm` to the artery-specific detector spacing
+when it is known (`0.65` for the supplied LCA inputs and `0.55` for RCA).
 
 The framework-independent evaluator accepts one exported probability or logit
 volume from AutoCAR or another method at a time. Its command interface is:

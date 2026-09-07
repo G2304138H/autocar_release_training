@@ -1,6 +1,8 @@
 # Shared dependencies for the maintained NPZ training/evaluation path.
 # Install the appropriate PyTorch wheel first; see requirements/README.md.
 numpy==1.26.4
+matplotlib==3.9.2
+pillow==11.0.0
 omegaconf==2.3.0
 hydra-core==1.3.2
 hydra-colorlog==1.2.0
