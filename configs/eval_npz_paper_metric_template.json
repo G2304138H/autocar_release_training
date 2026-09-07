@@ -21,7 +21,7 @@
   "max_visualizations": 0,
 
   "device": "auto",
-  "precision": "16-mixed",
+  "precision": "32",
   "output_dtype": "float16",
   "paper_metric_volume_threshold": 0.5,
   "paper_metric_ssim_window_size": 7,

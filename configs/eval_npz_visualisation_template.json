@@ -21,7 +21,7 @@
   "max_visualizations": 20,
 
   "device": "auto",
-  "precision": "16-mixed",
+  "precision": "32",
   "output_dtype": "float16",
   "prediction_threshold": 0.5,
   "ssim_window_size": 7,

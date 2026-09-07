@@ -15,7 +15,8 @@ trainer:
   check_val_every_n_epoch: 1
   accumulate_grad_batches: 4
   gradient_clip_val: 0.5
-  precision: 16-mixed
+  # spconv 2.3.8's FP16 implicit-GEMM tuner fails on the RTX 6000 Ada.
+  precision: 32-true
 
 callbacks:
   model_checkpoint:

@@ -15,10 +15,10 @@ trainer:
   # Native volumes currently require micro-batch 1. On one GPU this gives an
   # effective batch of 4, rather than claiming the paper's four-GPU setup.
   accumulate_grad_batches: 4
-  # Mixed precision and clipping are practical memory/stability choices not
-  # specified by the paper; override both for a separately labelled ablation.
+  # Full precision avoids spconv's implicit-GEMM tuner failure on Ada GPUs.
+  # Clipping is a practical stability choice not specified by the paper.
   gradient_clip_val: 0.5
-  precision: 16-mixed
+  precision: 32-true
 
 callbacks:
   model_checkpoint:

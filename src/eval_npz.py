@@ -423,7 +423,7 @@ def resolve_evaluation_options(
             )
         view_labels = labels
 
-    precision = str(config.get("precision", "16-mixed"))
+    precision = str(config.get("precision", "32"))
     if precision not in {"16-mixed", "32"}:
         raise ValueError("precision must be '16-mixed' or '32'.")
     output_dtype = str(config.get("output_dtype", "float16"))

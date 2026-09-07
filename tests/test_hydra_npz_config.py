@@ -37,6 +37,7 @@ def test_stage2_experiment_composes_a_consistent_paper_feature_width():
     ]
     assert config.data.minimum_train_pair_angle_deg == pytest.approx(30.0)
     assert config.trainer.check_val_every_n_epoch == 1
+    assert config.trainer.precision == "32-true"
 
 
 def test_stage2_gpu_debug_profile_does_not_force_spconv_onto_cpu():
@@ -94,6 +95,7 @@ def test_imagecas_artery_experiments_compose_cluster_paths(
     assert str(config.data.voxel_source).endswith(f"imagecas_voxel/{artery}")
     assert str(config.data.split_json).endswith("split.json")
     assert list(config.data.evaluation_view_indices) == [0, 6]
+    assert config.trainer.precision == "32-true"
     if artery == "lca":
         assert list(config.data.evaluation_view_labels) == [
             "RAO 25, CAU 35",

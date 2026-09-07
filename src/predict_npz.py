@@ -278,7 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--device", default="auto")
     parser.add_argument(
-        "--precision", choices=("16-mixed", "32"), default="16-mixed"
+        "--precision", choices=("16-mixed", "32"), default="32"
     )
     parser.add_argument(
         "--output-dtype", choices=("float16", "float32"), default="float16"

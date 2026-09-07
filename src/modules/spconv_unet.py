@@ -138,7 +138,11 @@ class SpconvUNetBase(nn.Module):
             kernel_size=5,
             padding=2,
             bias=False,
-            indice_key="subm0",
+            # This 5x5 convolution and the 3x3 decoder convolutions operate on
+            # the same coordinates, but they must not reuse one indice cache.
+            # spconv requires a shared key to have identical kernel metadata
+            # and algorithm selection.
+            indice_key="input_subm5",
         )
         self.bn0 = nn.BatchNorm1d(self.INIT_DIM)
 

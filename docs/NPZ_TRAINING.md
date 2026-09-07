@@ -379,9 +379,11 @@ last (finest) value is implemented. The maintained configuration therefore uses
 `LODs: [0.5]`; it does not claim progressive coarse-to-fine reconstruction.
 
 Native GT shapes currently require micro-batch 1. The maintained single-GPU
-experiment accumulates four steps for effective batch 4, uses `16-mixed`
-precision, and clips gradients at 0.5. Mixed precision and clipping are
-practical memory/stability choices, not settings reported by the paper.
+experiment accumulates four steps for effective batch 4, uses `32-true`
+precision, and clips gradients at 0.5. Full precision is required for the
+tested RTX 6000 Ada/spconv 2.3.8 environment: FP16 failed in spconv's
+implicit-GEMM algorithm tuner. Clipping is a practical stability choice, not a
+setting reported by the paper.
 
 The target command interface is:
 
@@ -511,8 +513,10 @@ so train/validation/test cases cannot be silently mixed. The command writes one
 manifest plus aggregate mean, sample standard deviation, and standard error
 for masked Dice, global 3D SSIM, and vessel-window masked 3D SSIM when defined.
 Existing prediction files are protected unless `--overwrite` is supplied.
-CUDA inference defaults to `--precision 16-mixed`; pass `--precision 32` for a
-full-precision comparison. Every prediction NPZ records its axis order, bounds,
+CUDA inference defaults to `--precision 32` for the tested RTX 6000
+Ada/spconv 2.3.8 environment. `--precision 16-mixed` remains an explicit
+experimental override for environments where spconv's implicit-GEMM tuner
+supports it. Every prediction NPZ records its axis order, bounds,
 voxel size, case ID, selected views, and pair angle. `summary.json` also records
 the checkpoint, device, inference precision, output dtype, sparse backend, and
 the complete sparse-projection protocol (candidate mode, distance sampling,
