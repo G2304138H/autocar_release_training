@@ -32,8 +32,8 @@ DATASETS = {
             "refiner_5mm/split.json"
         ),
         "pixel_spacing_mm": 0.65,
-        "fallback_pixel_spacing_mm": None,
-        "fallback_sid_mm": None,
+        "fallback_pixel_spacing_mm": 0.65,
+        "fallback_sid_mm": 900.0,
         "source_to_isocenter_mm": 750.0,
         "view_indices": (0, 6),
         "view_labels": ("RAO 25, CAU 35", "LAO 5, CRA 40"),

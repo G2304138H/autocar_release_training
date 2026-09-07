@@ -238,9 +238,9 @@ missing the expected `anchor_clinical_views` metadata or has different labels.
 `expected_imager_pixel_spacing_mm` likewise turns an artery/path mix-up into a
 clear error before training. The fallback values are explicitly millimetres;
 they are consulted only for a missing field and never overwrite a value stored
-in a case file. The maintained RCA configuration uses 900 mm SID, 750 mm
-source-to-isocentre distance, and 0.55 mm detector spacing. LCA keeps both
-fallbacks disabled because its current files provide the metadata.
+in a case file. Both maintained artery configurations use 900 mm SID and
+750 mm source-to-isocentre distance. RCA uses 0.55 mm detector spacing and LCA
+uses 0.65 mm detector spacing.
 
 Supported view policies are:
 

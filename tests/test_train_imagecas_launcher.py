@@ -13,8 +13,8 @@ def test_launcher_uses_supplied_lca_defaults():
     )
     assert str(settings["voxel_source"]).endswith("imagecas_voxel/lca")
     assert settings["pixel_spacing_mm"] == 0.65
-    assert settings["fallback_pixel_spacing_mm"] is None
-    assert settings["fallback_sid_mm"] is None
+    assert settings["fallback_pixel_spacing_mm"] == 0.65
+    assert settings["fallback_sid_mm"] == 900.0
     assert settings["view_labels"] == (
         "RAO 25, CAU 35",
         "LAO 5, CRA 40",

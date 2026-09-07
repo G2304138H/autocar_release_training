@@ -97,8 +97,8 @@ def test_imagecas_artery_experiments_compose_cluster_paths(
     assert list(config.data.evaluation_view_indices) == [0, 6]
     assert config.trainer.precision == "32-true"
     if artery == "lca":
-        assert config.data.fallback_imager_pixel_spacing_mm is None
-        assert config.data.fallback_sid_mm is None
+        assert config.data.fallback_imager_pixel_spacing_mm == pytest.approx(0.65)
+        assert config.data.fallback_sid_mm == pytest.approx(900.0)
         assert list(config.data.evaluation_view_labels) == [
             "RAO 25, CAU 35",
             "LAO 5, CRA 40",

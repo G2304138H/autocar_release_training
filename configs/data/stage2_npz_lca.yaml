@@ -9,8 +9,10 @@ split_json: /export/home2/reny0012/result/vessel_trees/multi_branch_experiments/
 # projection and voxel contracts are joined by the physical numeric case ID.
 case_id_mode: imagecas_numeric
 expected_imager_pixel_spacing_mm: 0.65
-fallback_imager_pixel_spacing_mm: null
-fallback_sid_mm: null
+
+# Legacy files use the same 0.9 m SID as RCA; only detector spacing differs.
+fallback_imager_pixel_spacing_mm: 0.65
+fallback_sid_mm: 900.0
 source_to_isocenter_mm: 750.0
 
 evaluation_view_indices: [0, 6]
