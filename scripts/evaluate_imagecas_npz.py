@@ -16,7 +16,6 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -29,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # projection files that omit detector spacing and SID metadata.
 DATASETS: Mapping[str, Mapping[str, Any]] = {
     "lca": {
-        "task_name": "train_autocar_lca",
+        "training_config": ROOT / "configs" / "experiment" / "stage2_npz_lca.yaml",
         "projection_source": Path(
             "/dataset/reny0012/vessel_code_stage_2_lca_paired/anchors"
         ),
@@ -48,7 +47,7 @@ DATASETS: Mapping[str, Mapping[str, Any]] = {
         "evaluation_view_labels": ("RAO 25, CAU 35", "LAO 5, CRA 40"),
     },
     "rca": {
-        "task_name": "train_autocar_rca",
+        "training_config": ROOT / "configs" / "experiment" / "stage2_npz_rca.yaml",
         "projection_source": Path(
             "/dataset/reny0012/imagecas_autocar_6/"
             "stage_2_imagecas_all_branch"
@@ -93,16 +92,16 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=ROOT / "logs",
         help=(
-            "Hydra logging root. Automatic checkpoint lookup searches "
-            "<log-dir>/train_autocar_{lca,rca}/runs."
+            "Hydra logging root. Automatic lookup reads each training config's "
+            "task_name and searches <log-dir>/<task_name>/runs."
         ),
     )
     parser.add_argument(
         "--output-root",
         type=Path,
         help=(
-            "Root for separate lca/ and rca/ results. Defaults to a timestamped "
-            "directory below <log-dir>/eval_autocar_paper_metrics."
+            "Optional common root for separate lca/ and rca/ results. By "
+            "default, each result is saved below its own training run directory."
         ),
     )
     for artery in ("lca", "rca"):
@@ -189,6 +188,27 @@ def _checkpoint_directory_candidates(experiment_dir: Path) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(_resolved(path) for path in directories))
 
 
+def _training_task_name(artery: str) -> str:
+    """Read the Hydra task name from the maintained artery training config."""
+
+    config_path = Path(DATASETS[artery]["training_config"])
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"Training configuration does not exist for {artery.upper()}: "
+            f"{config_path}"
+        )
+    for line in config_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("task_name:"):
+            continue
+        value = stripped.split(":", 1)[1].split("#", 1)[0].strip()
+        task_name = value.strip("'\"")
+        if task_name and not any(character.isspace() for character in task_name):
+            return task_name
+        break
+    raise ValueError(f"No valid task_name was found in {config_path}.")
+
+
 def _best_checkpoint_in_run(experiment_dir: Path) -> Path:
     """Return a run's best checkpoint without mistaking last.ckpt for best."""
 
@@ -230,7 +250,7 @@ def _best_checkpoint_in_run(experiment_dir: Path) -> Path:
 
 
 def _latest_trained_checkpoint(log_dir: Path, artery: str) -> tuple[Path, Path]:
-    task_name = str(DATASETS[artery]["task_name"])
+    task_name = _training_task_name(artery)
     runs_dir = _resolved(log_dir) / task_name / "runs"
     if not runs_dir.is_dir():
         raise FileNotFoundError(
@@ -239,7 +259,10 @@ def _latest_trained_checkpoint(log_dir: Path, artery: str) -> tuple[Path, Path]:
         )
     runs = sorted(
         (path for path in runs_dir.iterdir() if path.is_dir()),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        # Hydra names these directories YYYY-MM-DD_HH-MM-SS. Directory mtimes
+        # are unsuitable because writing a later evaluation below an old run
+        # would otherwise make that training run appear newest.
+        key=lambda path: path.name,
         reverse=True,
     )
     for run_dir in runs:
@@ -265,37 +288,63 @@ def _infer_experiment_dir(checkpoint: Path) -> Path:
     return checkpoint.parent
 
 
+def resolve_trained_checkpoint(
+    *,
+    artery: str,
+    log_dir: Path,
+    checkpoint: Path | None = None,
+    experiment_dir: Path | None = None,
+) -> tuple[Path, Path, str]:
+    """Resolve an explicit checkpoint or the configured task's latest best run."""
+
+    if artery not in DATASETS:
+        raise ValueError(f"Unsupported artery: {artery!r}.")
+    if checkpoint is not None:
+        resolved_checkpoint = _resolved(checkpoint)
+        if not resolved_checkpoint.is_file():
+            raise FileNotFoundError(
+                f"Explicit {artery.upper()} checkpoint does not exist: "
+                f"{resolved_checkpoint}"
+            )
+        if resolved_checkpoint.suffix != ".ckpt":
+            raise ValueError(
+                f"Explicit {artery.upper()} checkpoint must end in .ckpt: "
+                f"{resolved_checkpoint}"
+            )
+        resolved_experiment_dir = (
+            _resolved(experiment_dir)
+            if experiment_dir is not None
+            else _infer_experiment_dir(resolved_checkpoint)
+        )
+        if not resolved_experiment_dir.is_dir():
+            raise NotADirectoryError(
+                f"{artery.upper()} experiment directory does not exist: "
+                f"{resolved_experiment_dir}"
+            )
+        return resolved_checkpoint, resolved_experiment_dir, "explicit"
+    if experiment_dir is not None:
+        resolved_experiment_dir = _resolved(experiment_dir)
+        return (
+            _best_checkpoint_in_run(resolved_experiment_dir),
+            resolved_experiment_dir,
+            "experiment_best",
+        )
+    resolved_checkpoint, resolved_experiment_dir = _latest_trained_checkpoint(
+        log_dir, artery
+    )
+    return resolved_checkpoint, resolved_experiment_dir, "latest_run_best"
+
+
 def _resolve_checkpoint(
     args: argparse.Namespace,
     artery: str,
 ) -> tuple[Path, Path, str]:
-    explicit = getattr(args, f"{artery}_checkpoint")
-    experiment_override = getattr(args, f"{artery}_experiment_dir")
-    if explicit is not None:
-        checkpoint = _resolved(explicit)
-        if not checkpoint.is_file():
-            raise FileNotFoundError(
-                f"Explicit {artery.upper()} checkpoint does not exist: {checkpoint}"
-            )
-        if checkpoint.suffix != ".ckpt":
-            raise ValueError(
-                f"Explicit {artery.upper()} checkpoint must end in .ckpt: {checkpoint}"
-            )
-        experiment_dir = (
-            _resolved(experiment_override)
-            if experiment_override is not None
-            else _infer_experiment_dir(checkpoint)
-        )
-        return checkpoint, experiment_dir, "explicit"
-    if experiment_override is not None:
-        experiment_dir = _resolved(experiment_override)
-        return (
-            _best_checkpoint_in_run(experiment_dir),
-            experiment_dir,
-            "experiment_best",
-        )
-    checkpoint, experiment_dir = _latest_trained_checkpoint(args.log_dir, artery)
-    return checkpoint, experiment_dir, "latest_run_best"
+    return resolve_trained_checkpoint(
+        artery=artery,
+        log_dir=args.log_dir,
+        checkpoint=getattr(args, f"{artery}_checkpoint"),
+        experiment_dir=getattr(args, f"{artery}_experiment_dir"),
+    )
 
 
 def _input_path(args: argparse.Namespace, artery: str, name: str) -> Path:
@@ -329,6 +378,7 @@ def _evaluation_config(
     labels = dataset["evaluation_view_labels"]
     return {
         "artery_type": artery,
+        "training_config": str(dataset["training_config"]),
         "experiment_dir": str(experiment_dir),
         "checkpoint_path": str(checkpoint),
         "checkpoint_choice": "best",
@@ -392,7 +442,7 @@ def _assert_output_available(output_dir: Path, *, overwrite: bool) -> None:
 def _build_plans(
     args: argparse.Namespace,
     *,
-    output_root: Path,
+    output_root: Path | None,
 ) -> list[EvaluationPlan]:
     arteries = ("lca", "rca") if args.artery == "both" else (args.artery,)
     plans: list[EvaluationPlan] = []
@@ -400,9 +450,19 @@ def _build_plans(
         checkpoint, experiment_dir, checkpoint_source = _resolve_checkpoint(
             args, artery
         )
-        output_dir = output_root / artery
+        output_dir = (
+            output_root / artery
+            if output_root is not None
+            else experiment_dir / "evaluation_paper_metric" / checkpoint.stem
+        )
         _assert_output_available(output_dir, overwrite=args.overwrite)
-        config_path = output_root / "configs" / f"{artery}_paper_metric.json"
+        config_path = (
+            output_root / "configs" / f"{artery}_paper_metric.json"
+            if output_root is not None
+            else experiment_dir
+            / "evaluation_configs"
+            / f"paper_metric_{checkpoint.stem}.json"
+        )
         config = _evaluation_config(
             args,
             artery,
@@ -434,6 +494,7 @@ def _plan_record(plans: Sequence[EvaluationPlan]) -> dict[str, Any]:
         "runs": [
             {
                 "artery": plan.artery,
+                "training_config": str(DATASETS[plan.artery]["training_config"]),
                 "checkpoint": str(plan.checkpoint),
                 "checkpoint_source": plan.checkpoint_source,
                 "experiment_dir": str(plan.experiment_dir),
@@ -444,6 +505,21 @@ def _plan_record(plans: Sequence[EvaluationPlan]) -> dict[str, Any]:
             for plan in plans
         ],
     }
+
+
+def _plan_record_paths(
+    plans: Sequence[EvaluationPlan],
+    *,
+    output_root: Path | None,
+) -> tuple[Path, ...]:
+    if output_root is not None:
+        return (output_root / "evaluation_plan.json",)
+    return tuple(
+        plan.experiment_dir
+        / "evaluation_configs"
+        / f"paper_metric_{plan.checkpoint.stem}_plan.json"
+        for plan in plans
+    )
 
 
 def _combined_summary(plans: Sequence[EvaluationPlan]) -> dict[str, Any]:
@@ -475,6 +551,21 @@ def _combined_summary(plans: Sequence[EvaluationPlan]) -> dict[str, Any]:
     }
 
 
+def _summary_paths(
+    plans: Sequence[EvaluationPlan],
+    *,
+    output_root: Path | None,
+) -> tuple[Path, ...]:
+    filename = (
+        "combined_paper_metric_summary.json"
+        if len(plans) > 1
+        else "paper_metric_launcher_summary.json"
+    )
+    if output_root is not None:
+        return (output_root / filename,)
+    return tuple(plan.output_dir / filename for plan in plans)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.max_cases is not None and args.max_cases < 1:
@@ -483,18 +574,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_root = (
         _resolved(args.output_root)
         if args.output_root is not None
-        else log_dir
-        / "eval_autocar_paper_metrics"
-        / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        else None
     )
-    if output_root.exists() and not output_root.is_dir():
+    if output_root is not None and output_root.exists() and not output_root.is_dir():
         raise NotADirectoryError(f"--output-root is not a directory: {output_root}")
 
     plans = _build_plans(args, output_root=output_root)
     for plan in plans:
         _write_json(plan.config_path, plan.config)
     plan_record = _plan_record(plans)
-    _write_json(output_root / "evaluation_plan.json", plan_record)
+    for path in _plan_record_paths(plans, output_root=output_root):
+        _write_json(path, plan_record)
 
     for plan in plans:
         print(
@@ -504,7 +594,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(f"Launching: {shlex.join(_evaluation_command(plan))}", flush=True)
     if args.dry_run:
-        print(f"Dry run complete. Resolved configs: {output_root / 'configs'}")
+        print(
+            "Dry run complete. Resolved configs: "
+            + ", ".join(str(plan.config_path) for plan in plans)
+        )
         return 0
 
     environment = os.environ.copy()
@@ -517,9 +610,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             check=True,
         )
 
-    summary_path = output_root / "combined_paper_metric_summary.json"
-    _write_json(summary_path, _combined_summary(plans))
-    print(f"Completed paper-metric evaluation: {summary_path}")
+    summary = _combined_summary(plans)
+    summary_paths = _summary_paths(plans, output_root=output_root)
+    for path in summary_paths:
+        _write_json(path, summary)
+    print(
+        "Completed paper-metric evaluation: "
+        + ", ".join(str(path) for path in summary_paths)
+    )
     return 0
 
 

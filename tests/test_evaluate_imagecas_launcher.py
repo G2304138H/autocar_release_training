@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 
 from scripts import evaluate_imagecas_npz as launcher
+
+
+def test_training_task_names_are_read_from_artery_configs():
+    assert launcher._training_task_name("lca") == "train_autocar_lca"
+    assert launcher._training_task_name("rca") == "train_autocar_rca"
 
 
 def test_best_checkpoint_prefers_unique_non_last_checkpoint(tmp_path):
@@ -37,8 +41,6 @@ def test_latest_checkpoint_skips_new_run_before_first_validation(tmp_path):
     new_run.mkdir(parents=True)
     best = old_checkpoints / "epoch_042.ckpt"
     best.touch()
-    os.utime(old_run, (1, 1))
-    os.utime(new_run, (2, 2))
 
     checkpoint, experiment_dir = launcher._latest_trained_checkpoint(
         tmp_path, "lca"
@@ -111,6 +113,47 @@ def test_both_artery_dry_run_writes_paper_metric_configs(tmp_path):
     assert rca["fallback_sid_mm"] == 900.0
     assert rca["evaluation_view_labels"] is None
     assert [run["artery"] for run in plan["runs"]] == ["lca", "rca"]
+
+
+def test_default_output_is_inside_the_training_experiment(tmp_path):
+    experiment_dir = tmp_path / "train_autocar_lca" / "runs" / "run_1"
+    checkpoint_dir = experiment_dir / "checkpoints"
+    projections = tmp_path / "projections"
+    voxels = tmp_path / "voxels"
+    split = tmp_path / "split.json"
+    checkpoint_dir.mkdir(parents=True)
+    projections.mkdir()
+    voxels.mkdir()
+    checkpoint = checkpoint_dir / "epoch_021.ckpt"
+    checkpoint.touch()
+    split.write_text(
+        json.dumps({"train": ["1"], "val": ["2"], "test": ["3"]}),
+        encoding="utf-8",
+    )
+    args = launcher._parser().parse_args(
+        [
+            "--artery",
+            "lca",
+            "--lca-checkpoint",
+            str(checkpoint),
+            "--lca-projection-source",
+            str(projections),
+            "--lca-voxel-source",
+            str(voxels),
+            "--lca-split-json",
+            str(split),
+        ]
+    )
+
+    plan = launcher._build_plans(args, output_root=None)[0]
+
+    assert plan.experiment_dir == experiment_dir.resolve()
+    assert plan.output_dir == (
+        experiment_dir / "evaluation_paper_metric" / "epoch_021"
+    ).resolve()
+    assert plan.config_path == (
+        experiment_dir / "evaluation_configs" / "paper_metric_epoch_021.json"
+    ).resolve()
 
 
 def test_combined_summary_keeps_arteries_separate(tmp_path):
