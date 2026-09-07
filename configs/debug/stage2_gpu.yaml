@@ -1,0 +1,26 @@
+# @package _global_
+
+# One real CUDA/spconv train and validation batch for the maintained NPZ path.
+# Unlike the upstream debug profiles, this must not switch the sparse model to CPU.
+task_name: "debug_stage2_gpu"
+test: false
+
+callbacks: null
+logger: null
+
+extras:
+  ignore_warnings: false
+  enforce_tags: false
+
+trainer:
+  max_epochs: 1
+  accelerator: gpu
+  devices: 1
+  precision: 32-true
+  limit_train_batches: 1
+  limit_val_batches: 1
+  detect_anomaly: true
+
+data:
+  num_workers: 0
+  pin_memory: false

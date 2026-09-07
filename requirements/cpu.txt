@@ -1,0 +1,6 @@
+# CPU development/test profile. Install torch from the CPU index first; see README.md.
+-r training.txt
+
+pytest==8.3.4
+pytest-cov==6.0.0
+

@@ -1,0 +1,57 @@
+_target_: src.modules.autocar_voxel_pl.AutoCARVoxelLit
+
+optimizer:
+  # The paper says "ADMM" at 3e-4, while the released trainer actually uses
+  # Adam. We retain the released optimizer family at the paper's stated rate.
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 0.0003
+
+# The paper does not specify a learning-rate scheduler. Add one explicitly in
+# an experiment override if desired so that such a run is labelled non-paper.
+scheduler: null
+
+recon_net:
+  # Prebuilt spconv-cu124 is the primary CUDA 12.4 training backend.
+  sparse_backend: spconv
+  expected_view_count: 2
+  encoder2d:
+    # The paper specifies a 12-channel hourglass feature per view.
+    out_ch: 12
+    input: mask
+  ray_casting:
+    bbox_min: [-100, -100, -100]
+    bbox_max: [100, 100, 100]
+    # Only the final released LOD is reconstructable from the available source.
+    LODs: [0.5]
+    # The paper leaves epsilon_v unspecified. This provisional, memory-safe
+    # value makes nearest-sampled EDT inputs identically zero. Prefer 1.5 only
+    # after a full CUDA backward profile on the worst eligible pair [5,6].
+    max_pixel_distance: 0.5
+    support_views: 2
+    fusion: concat
+    include_distance_feature: true
+    # Enumerate voxel centres for exact Eqs. 7-9 intersection. Ray-centre
+    # sampling can miss valid cells after quantisation and is legacy-only.
+    candidate_mode: voxel_grid
+    voxel_chunk_size: 262144
+    # Eq. 5 defines a discrete active-pixel set. Learned features below remain
+    # bilinear, but EDT membership uses generator-consistent nearest pixels.
+    distance_sampling: nearest
+    ray_chunk_size: 4096
+    pixel_center_offset: 0.0
+    projection_pixel_order: xy
+  unet3d:
+    # 2 views * (12 encoder channels + 1 EDT channel).
+    in_channels: 26
+    architecture: 34C
+    # Channel 0 is occupancy. Channel 1 is reserved for paper-compatible
+    # auxiliary centerness experiments and is not used by the default loss.
+    out_channels: 2
+
+prediction_threshold: 0.5
+bce_weight: 1.0
+dice_weight: 1.0
+ssim_window_size: 7
+ssim_chunk_depth: 8
+ssim_every_n_epochs: 10

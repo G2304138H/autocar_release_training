@@ -1,0 +1,6 @@
+-r base.txt
+
+lightning==2.4.0
+torchmetrics==1.4.3
+tensorboard==2.18.0
+

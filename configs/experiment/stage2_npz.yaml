@@ -1,0 +1,29 @@
+# @package _global_
+
+defaults:
+  - override /data: stage2_npz
+  - override /model: autocar_npz
+
+tags: ["autocar", "stage2_npz", "voxel_supervision"]
+seed: 42
+test: true
+
+trainer:
+  min_epochs: 1
+  max_epochs: 200
+  check_val_every_n_epoch: 1
+  # Native volumes currently require micro-batch 1. On one GPU this gives an
+  # effective batch of 4, rather than claiming the paper's four-GPU setup.
+  accumulate_grad_batches: 4
+  # Mixed precision and clipping are practical memory/stability choices not
+  # specified by the paper; override both for a separately labelled ablation.
+  gradient_clip_val: 0.5
+  precision: 16-mixed
+
+callbacks:
+  model_checkpoint:
+    monitor: val/masked_dice_3d
+    mode: max
+  early_stopping:
+    monitor: val/masked_dice_3d
+    mode: max

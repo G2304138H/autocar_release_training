@@ -1,0 +1,19 @@
+# Frozen compatibility layer for the authors' old environment only.
+# Requires Python 3.8 and a separate environment/container. Do not combine it
+# with requirements/cuda124.txt. PyTorch, PyTorch3D, and MinkowskiEngine must be
+# installed with their dedicated commands documented in requirements/README.md.
+numpy==1.23.5
+scipy==1.10.1
+scikit-image==0.19.3
+kornia==0.6.12
+hydra-core==1.3.2
+omegaconf==2.3.0
+rootutils==1.0.7
+lightning==1.9.5
+torchmetrics==0.11.4
+rich==13.9.4
+tqdm==4.67.1
+trimesh==4.4.9
+pysdf==0.1.9
+numba==0.58.1
+
