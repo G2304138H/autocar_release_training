@@ -10,6 +10,14 @@ Transferable 3D Dynamic Vascular Reconstruction For Instantaneous Diagnosis*.
 > Start with [Training and evaluating AutoCAR on paired NPZ data](docs/NPZ_TRAINING.md).
 > Voxel-to-graph conversion and dynamic graph post-processing are intentionally
 > outside that reconstruction-comparison path.
+
+The supplied cluster datasets have ready-to-run LCA/RCA configurations and a
+preflight launcher:
+
+```bash
+python scripts/train_imagecas_npz.py --artery lca --preflight-only
+python scripts/train_imagecas_npz.py --artery rca --preflight-only
+```
 <!-- | [Static 3D Viewer](https://zhuyh19-autocar-synthetic-data-preview.static.hf.space) | [Dynamic 3D Viewer](https://autocar.zyh.science/dynamic_full.html) 
 <video height="512" controls autoplay>
     <source src="teaser.mp4" type="video/mp4" >

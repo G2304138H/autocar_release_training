@@ -12,6 +12,7 @@ def _write_projection(
     case_id: str = "42",
     num_views: int = 4,
     image_dim: int = 8,
+    pixel_spacing_mm: float = 0.65,
 ) -> None:
     images = np.zeros((num_views, image_dim, image_dim), dtype=np.float32)
     for view_index in range(num_views):
@@ -23,7 +24,11 @@ def _write_projection(
     from src.geometry.projection_geometry import ProjectionGeometry
 
     geometry = ProjectionGeometry.from_angles(
-        theta, phi, image_dim, sid_mm=900.0, pixel_spacing_mm=0.65
+        theta,
+        phi,
+        image_dim,
+        sid_mm=900.0,
+        pixel_spacing_mm=pixel_spacing_mm,
     )
     anchor_labels = np.asarray(
         [f"anchor-{view_index}" for view_index in range(num_views)]
@@ -37,7 +42,7 @@ def _write_projection(
         phi_deg=phi,
         image_dim=np.asarray(image_dim, dtype=np.int32),
         sid=np.asarray(0.9, dtype=np.float32),
-        imager_pixel_spacing=np.asarray(0.65, dtype=np.float32),
+        imager_pixel_spacing=np.asarray(pixel_spacing_mm, dtype=np.float32),
         imager_pixel_spacing_units=np.asarray("mm"),
         projection_center_offset=np.asarray(
             [0.001, 0.002, 0.003], dtype=np.float32
@@ -131,6 +136,68 @@ class Stage2NPZDatasetTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(Stage2NPZError, "do not match expected"):
                 _ = mismatching[0]
+
+    def test_expected_detector_pixel_spacing_is_validated(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection_path = root / "projection.npz"
+            voxel_path = root / "42.npz"
+            _write_projection(projection_path, pixel_spacing_mm=0.55)
+            _write_voxel(voxel_path)
+
+            matching = Stage2NPZDataset(
+                projection_path,
+                voxel_path,
+                expected_imager_pixel_spacing_mm=0.55,
+            )
+            self.assertAlmostEqual(
+                float(matching[0]["imager_pixel_spacing_mm"]), 0.55
+            )
+
+            mismatching = Stage2NPZDataset(
+                projection_path,
+                voxel_path,
+                expected_imager_pixel_spacing_mm=0.65,
+            )
+            with self.assertRaisesRegex(Stage2NPZError, "expected 0.65 mm"):
+                _ = mismatching[0]
+
+    def test_eager_projection_validation_checks_every_record(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _write_projection(
+                root / "a_good.npz", case_id="42", pixel_spacing_mm=0.55
+            )
+            _write_projection(
+                root / "z_bad.npz", case_id="43", pixel_spacing_mm=0.65
+            )
+            _write_voxel(root / "42.npz")
+            _write_voxel(root / "43.npz")
+            dataset = Stage2NPZDataset(
+                [root / "a_good.npz", root / "z_bad.npz"],
+                [root / "42.npz", root / "43.npz"],
+                expected_imager_pixel_spacing_mm=0.55,
+            )
+
+            with self.assertRaisesRegex(Stage2NPZError, "expected 0.55 mm"):
+                dataset.validate_projection_metadata()
+
+    def test_imagecas_case_ids_join_prefixes_and_zero_padding(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection_path = root / "lca_0001.npz"
+            voxel_path = root / "1.npz"
+            _write_projection(projection_path, case_id="lca_0001")
+            _write_voxel(voxel_path)
+
+            dataset = Stage2NPZDataset(
+                projection_path,
+                voxel_path,
+                case_ids=["0001"],
+                case_id_mode="imagecas_numeric",
+            )
+            self.assertEqual(dataset.records[0].case_id, "1")
+            self.assertEqual(dataset[0]["case_id"], "1")
 
     def test_path_like_case_id_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

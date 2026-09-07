@@ -20,6 +20,16 @@ python scripts/check_environment.py
 python scripts/check_environment.py --sparse-smoke-test
 ```
 
+To install at the requested shared-filesystem location, create the environment
+there and invoke its interpreter explicitly (activation is optional):
+
+```bash
+python3.11 -m venv /export/home2/reny0012/vir_env
+/export/home2/reny0012/vir_env/bin/python -m pip install --upgrade pip setuptools wheel
+/export/home2/reny0012/vir_env/bin/python -m pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cu124
+/export/home2/reny0012/vir_env/bin/python -m pip install -r requirements/cuda124.txt
+```
+
 The `spconv-cu124` wheel requires an x86-64 Linux environment with a recent
 enough glibc. CUDA 12.4 wheels for spconv 2.3.8 use the `manylinux_2_28` tag.
 Run the diagnostic before launching training.

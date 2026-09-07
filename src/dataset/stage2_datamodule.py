@@ -34,6 +34,8 @@ class Stage2NPZDataModule(LightningDataModule):
         num_workers: int = 0,
         random_seed: int = 42,
         minimum_train_pair_angle_deg: float = 30.0,
+        case_id_mode: str = "literal",
+        expected_imager_pixel_spacing_mm: float | None = None,
         pin_memory: bool = True,
     ) -> None:
         super().__init__()
@@ -72,17 +74,29 @@ class Stage2NPZDataModule(LightningDataModule):
         self.minimum_train_pair_angle_deg = float(
             minimum_train_pair_angle_deg
         )
+        self.case_id_mode = str(case_id_mode)
+        self.expected_imager_pixel_spacing_mm = (
+            None
+            if expected_imager_pixel_spacing_mm is None
+            else float(expected_imager_pixel_spacing_mm)
+        )
         self.pin_memory = bool(pin_memory)
         self.data_train: Stage2NPZDataset | None = None
         self.data_val: Stage2NPZDataset | None = None
         self.data_test: Stage2NPZDataset | None = None
 
     def setup(self, stage: str | None = None) -> None:
-        splits = load_case_splits(self.split_json)
+        splits = load_case_splits(
+            self.split_json, case_id_mode=self.case_id_mode
+        )
         common: dict[str, Any] = {
             "projection_source": self.projection_source,
             "voxel_source": self.voxel_source,
             "output_type": "torch",
+            "case_id_mode": self.case_id_mode,
+            "expected_imager_pixel_spacing_mm": (
+                self.expected_imager_pixel_spacing_mm
+            ),
         }
         if stage in (None, "fit", "validate"):
             self.data_train = Stage2NPZDataset(

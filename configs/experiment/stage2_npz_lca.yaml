@@ -1,0 +1,26 @@
+# @package _global_
+
+defaults:
+  - override /data: stage2_npz_lca
+  - override /model: autocar_npz
+
+task_name: train_autocar_lca
+tags: ["autocar", "stage2_npz", "lca", "voxel_supervision"]
+seed: 42
+test: true
+
+trainer:
+  min_epochs: 1
+  max_epochs: 200
+  check_val_every_n_epoch: 1
+  accumulate_grad_batches: 4
+  gradient_clip_val: 0.5
+  precision: 16-mixed
+
+callbacks:
+  model_checkpoint:
+    monitor: val/masked_dice_3d
+    mode: max
+  early_stopping:
+    monitor: val/masked_dice_3d
+    mode: max

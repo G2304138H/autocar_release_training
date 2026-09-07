@@ -1,0 +1,19 @@
+_target_: src.dataset.stage2_datamodule.Stage2NPZDataModule
+
+# Physical-case inputs supplied for the LCA benchmark.
+projection_source: /dataset/reny0012/vessel_code_stage_2_lca_paired/anchors
+voxel_source: /dataset/reny0012/imagecas_voxel/lca
+split_json: /export/home2/reny0012/result/vessel_trees/multi_branch_experiments/vggt_branch_prefix_lca_grouped_visibility_1to7_clinical_views_refiner_5mm/split.json
+
+# The split stores .../<case_number>/prefix_02.npz paths, whereas both the
+# projection and voxel contracts are joined by the physical numeric case ID.
+case_id_mode: imagecas_numeric
+expected_imager_pixel_spacing_mm: 0.65
+
+evaluation_view_indices: [0, 6]
+evaluation_view_labels: ["RAO 25, CAU 35", "LAO 5, CRA 40"]
+batch_size: 1
+num_workers: 0
+random_seed: ${seed}
+minimum_train_pair_angle_deg: 30.0
+pin_memory: true

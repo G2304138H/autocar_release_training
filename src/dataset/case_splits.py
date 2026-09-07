@@ -6,9 +6,18 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+from src.dataset.case_ids import normalize_case_id
 
-def load_case_splits(path: str | Path) -> dict[str, tuple[str, ...]]:
-    """Load disjoint, non-empty train/validation/test case IDs from JSON."""
+
+def load_case_splits(
+    path: str | Path, *, case_id_mode: str = "literal"
+) -> dict[str, tuple[str, ...]]:
+    """Load disjoint, non-empty train/validation/test case IDs from JSON.
+
+    The supplied ImageCAS split manifests store source paths rather than case
+    IDs. ``case_id_mode="imagecas_numeric"`` extracts the physical case number
+    from both RCA filenames and LCA grouped-directory paths.
+    """
 
     split_path = Path(path)
     raw = json.loads(split_path.read_text(encoding="utf-8"))
@@ -22,9 +31,15 @@ def load_case_splits(path: str | Path) -> dict[str, tuple[str, ...]]:
             raise ValueError(
                 f"Split manifest {split_path} requires a non-empty {split!r} list."
             )
-        case_ids = tuple(str(value).strip() for value in values)
-        if any(not case_id for case_id in case_ids):
-            raise ValueError(f"Split {split!r} contains an empty case ID.")
+        try:
+            case_ids = tuple(
+                normalize_case_id(value, mode=case_id_mode) for value in values
+            )
+        except (TypeError, UnicodeError, ValueError) as error:
+            raise ValueError(
+                f"Split {split!r} in {split_path} contains an invalid case ID: "
+                f"{error}"
+            ) from error
         if len(set(case_ids)) != len(case_ids):
             raise ValueError(f"Split {split!r} contains duplicate case IDs.")
         result[split] = case_ids

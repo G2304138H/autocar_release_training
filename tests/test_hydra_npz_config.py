@@ -55,3 +55,49 @@ def test_stage2_gpu_debug_profile_does_not_force_spconv_onto_cpu():
     assert config.trainer.limit_train_batches == 1
     assert config.trainer.limit_val_batches == 1
     assert config.test is False
+
+
+@pytest.mark.parametrize(
+    ("experiment", "artery", "pixel_spacing", "projection_suffix"),
+    [
+        (
+            "stage2_npz_lca",
+            "lca",
+            0.65,
+            "vessel_code_stage_2_lca_paired/anchors",
+        ),
+        (
+            "stage2_npz_rca",
+            "rca",
+            0.55,
+            "imagecas_autocar_6/stage_2_imagecas_all_branch",
+        ),
+    ],
+)
+def test_imagecas_artery_experiments_compose_cluster_paths(
+    experiment, artery, pixel_spacing, projection_suffix
+):
+    config_directory = Path(__file__).parents[1] / "configs"
+    with initialize_config_dir(
+        version_base="1.3", config_dir=str(config_directory.resolve())
+    ):
+        config = compose(
+            config_name="train.yaml", overrides=[f"experiment={experiment}"]
+        )
+
+    assert config.task_name == f"train_autocar_{artery}"
+    assert config.data.case_id_mode == "imagecas_numeric"
+    assert config.data.expected_imager_pixel_spacing_mm == pytest.approx(
+        pixel_spacing
+    )
+    assert str(config.data.projection_source).endswith(projection_suffix)
+    assert str(config.data.voxel_source).endswith(f"imagecas_voxel/{artery}")
+    assert str(config.data.split_json).endswith("split.json")
+    assert list(config.data.evaluation_view_indices) == [0, 6]
+    if artery == "lca":
+        assert list(config.data.evaluation_view_labels) == [
+            "RAO 25, CAU 35",
+            "LAO 5, CRA 40",
+        ]
+    else:
+        assert config.data.evaluation_view_labels is None

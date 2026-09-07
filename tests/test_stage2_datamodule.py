@@ -28,6 +28,42 @@ def test_split_manifest_preserves_declared_case_order(tmp_path):
     assert load_case_splits(path)["train"] == ("2", "1")
 
 
+def test_split_manifest_normalises_supplied_imagecas_path_formats(tmp_path):
+    path = tmp_path / "splits.json"
+    path.write_text(
+        json.dumps(
+            {
+                "train": ["/features/rca_0508.npz"],
+                "val": ["/features/lca/23/prefix_02.npz"],
+                "test": ["0042"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_case_splits(path, case_id_mode="imagecas_numeric") == {
+        "train": ("508",),
+        "val": ("23",),
+        "test": ("42",),
+    }
+
+
+def test_split_manifest_detects_duplicates_after_normalisation(tmp_path):
+    path = tmp_path / "splits.json"
+    path.write_text(
+        json.dumps(
+            {
+                "train": ["/features/rca_0001.npz", "0001"],
+                "val": ["2"],
+                "test": ["3"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        load_case_splits(path, case_id_mode="imagecas_numeric")
+
+
 def test_datamodule_rejects_variable_shape_batching():
     pytest.importorskip("lightning")
     from src.dataset.stage2_datamodule import Stage2NPZDataModule

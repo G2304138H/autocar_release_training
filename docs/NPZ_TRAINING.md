@@ -65,6 +65,27 @@ See [the environment profile guide](../requirements/README.md) for the isolated
 legacy CUDA 11.3/MinkowskiEngine environment and an explanation of the CUDA
 version numbers reported by the driver, toolkit, and PyTorch.
 
+### Cluster virtual environment at `/export/home2/reny0012/vir_env`
+
+Run these commands from the `codex/npz-training` checkout. They use only the
+standard-library `venv` module and pip; conda and a local CUDA toolkit build are
+not required:
+
+```bash
+cd /path/to/autocar_release
+python3.11 -m venv /export/home2/reny0012/vir_env
+/export/home2/reny0012/vir_env/bin/python -m pip install --upgrade pip setuptools wheel
+/export/home2/reny0012/vir_env/bin/python -m pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cu124
+/export/home2/reny0012/vir_env/bin/python -m pip install -r requirements/cuda124.txt
+/export/home2/reny0012/vir_env/bin/python scripts/check_environment.py
+/export/home2/reny0012/vir_env/bin/python scripts/check_environment.py --sparse-smoke-test
+```
+
+If that environment directory already exists, first run its `bin/python -V`.
+Do not mix a pre-existing Python 3.8/legacy MinkowskiEngine environment with
+this Python 3.11/spconv profile. A driver reporting CUDA 12.5 is compatible
+with the installed cu124 wheels; `torch.version.cuda` should report `12.4`.
+
 ## 2. Expected dataset layout
 
 Projection filenames and voxel filenames do not have to share a stem. Pair
@@ -96,6 +117,25 @@ and `test` case-ID lists:
 
 Splits must be made by case, not by view, so projections of one anatomy cannot
 leak between training and evaluation.
+
+The supplied schema-v2 manifests instead store paths in the top-level split
+lists. The maintained LCA/RCA configurations set
+`case_id_mode=imagecas_numeric`, which maps both supported forms to the same
+numeric physical-case ID used by `<case_number>.npz` voxel files:
+
+```text
+.../rca_0508.npz             -> 508
+.../lca/23/prefix_02.npz     -> 23
+```
+
+The attached manifests validate as 602/75/76 train/validation/test physical
+cases for LCA and 600/75/74 for RCA, with no overlap after normalization.
+
+The cluster-specific inputs are configured in
+`configs/data/stage2_npz_lca.yaml` and
+`configs/data/stage2_npz_rca.yaml`. The loader reads detector spacing from each
+projection NPZ and checks it against the declared artery-level invariant:
+0.65 mm for LCA and 0.55 mm for RCA. It never silently replaces file metadata.
 
 ### Projection NPZ contract
 
@@ -153,6 +193,8 @@ Stage2NPZDataset(
     minimum_pair_angle_deg=0.0,
     output_type="numpy",             # "numpy" or "torch"
     case_ids=None,
+    case_id_mode="literal",          # or "imagecas_numeric"
+    expected_imager_pixel_spacing_mm=None,
     gt_origin_xyz_mm=None,
     source_to_isocenter_mm=750.0,
 )
@@ -185,6 +227,8 @@ Pass an explicit XYZ vector only when the source volume genuinely has a
 different lower-bound origin; the override is a boundary, not a voxel centre.
 `fixed_view_labels` makes fixed-index evaluation fail early when a case is
 missing the expected `anchor_clinical_views` metadata or has different labels.
+`expected_imager_pixel_spacing_mm` likewise turns an artery/path mix-up into a
+clear error before training.
 
 Supported view policies are:
 
@@ -348,6 +392,37 @@ python -m src.train experiment=stage2_npz \
   data.split_json=/path/to/splits.json
 ```
 
+For the supplied cluster paths, use the Python launcher. Its preflight
+normalizes the path-based split entries, checks every case has exactly one
+projection/voxel pair, validates detector spacing, and loads one case from
+each split:
+
+```bash
+/export/home2/reny0012/vir_env/bin/python scripts/train_imagecas_npz.py --artery lca --preflight-only
+/export/home2/reny0012/vir_env/bin/python scripts/train_imagecas_npz.py --artery rca --preflight-only
+```
+
+Run a one-batch end-to-end GPU check for each artery before committing a long
+job:
+
+```bash
+/export/home2/reny0012/vir_env/bin/python scripts/train_imagecas_npz.py --artery lca --max-epochs 1 -- debug=stage2_gpu
+/export/home2/reny0012/vir_env/bin/python scripts/train_imagecas_npz.py --artery rca --max-epochs 1 -- debug=stage2_gpu
+```
+
+Then launch the independent full training runs:
+
+```bash
+/export/home2/reny0012/vir_env/bin/python scripts/train_imagecas_npz.py --artery lca --max-epochs 200
+/export/home2/reny0012/vir_env/bin/python scripts/train_imagecas_npz.py --artery rca --max-epochs 200
+```
+
+The experiments use separate task names (`train_autocar_lca` and
+`train_autocar_rca`), so checkpoints and TensorBoard logs do not collide.
+Resume with `--checkpoint /absolute/path/to/last.ckpt`. Start with
+`--num-workers 0`; after the first successful epoch, a small positive value can
+be benchmarked if the cluster's shared-memory limits permit it.
+
 For a one-batch end-to-end CUDA check, use the dedicated GPU debug profile:
 
 ```bash
@@ -448,6 +523,34 @@ By default the exporter also verifies the two expected clinical-anchor labels.
 `--skip-anchor-label-check` exists for a separately documented dataset schema;
 using it removes the semantic-slot safeguard and should be recorded as a
 protocol change.
+
+For a complete config-driven validation-and-test run, copy either
+`configs/eval_npz_paper_metric_template.json` or
+`configs/eval_npz_visualisation_template.json`, fill in the checkpoint and
+dataset paths, and run:
+
+```bash
+python -m src.eval_npz --config /path/to/eval_config.json
+```
+
+This runner follows the parametric evaluator's conventions. `eval_split` may
+be `val`, `test`, or `val_test`; `num_eval_cases` accepts a positive integer or
+`"all"`; and `eval_case_ids` can select named diagnostic cases without leaving
+the requested split. Every selected case is reconstructed directly from the
+fixed input views and saved under
+`predictions/final/{validation,test}/<case_id>.npz`. The output also includes a
+prediction manifest, synchronized model-forward timing, `performance_*` JSON
+files, a resolved configuration, and an audited evaluation record.
+
+`evaluation_mode: "paper_metric"` writes per-case JSON/CSV, aggregate macro
+mean/standard-error and micro Dice summaries, and a split comparison chart
+under `metrics/`. `evaluation_mode: "visualisation"` writes an input-view
+panel, orthogonal probability/GT overlays, an optional rotating 3D GIF, case
+metrics, and an artifact manifest under
+`visualization/<case_id>/<split>/final/`. Use `max_visualizations` to cap these
+bundles without limiting prediction or metric generation. Set
+`visualization_gif_frames` to `0` to skip GIF rendering while retaining the
+static monitor images.
 
 The framework-independent evaluator accepts one exported probability or logit
 volume from AutoCAR or another method at a time. Its command interface is:

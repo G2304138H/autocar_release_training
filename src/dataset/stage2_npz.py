@@ -26,6 +26,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from src.dataset.case_ids import VALID_CASE_ID_MODES, normalize_case_id
 from src.geometry.projection_geometry import (
     DEFAULT_SOURCE_TO_ISOCENTER_MM,
     ProjectionGeometry,
@@ -92,10 +93,15 @@ def _scalar_text(value: Any) -> str:
     return str(value).strip()
 
 
-def _validated_case_id(value: Any, path: Path) -> str:
+def _validated_case_id(
+    value: Any, path: Path, case_id_mode: str = "literal"
+) -> str:
     """Return a non-empty identifier that is also safe as one filename."""
 
-    case_id = _scalar_text(value)
+    try:
+        case_id = normalize_case_id(value, mode=case_id_mode)
+    except (TypeError, UnicodeError, ValueError) as error:
+        raise Stage2NPZError(f"Invalid case_id in {path}: {error}") from error
     if (
         not case_id
         or case_id in {".", ".."}
@@ -110,10 +116,12 @@ def _validated_case_id(value: Any, path: Path) -> str:
     return case_id
 
 
-def _case_id_from_projection(path: Path) -> str:
+def _case_id_from_projection(path: Path, case_id_mode: str) -> str:
     try:
         with np.load(path, allow_pickle=False) as data:
-            case_id = _validated_case_id(_scalar(data, "case_id", path), path)
+            case_id = _validated_case_id(
+                _scalar(data, "case_id", path), path, case_id_mode
+            )
     except (OSError, ValueError) as error:
         if isinstance(error, Stage2NPZError):
             raise
@@ -123,15 +131,15 @@ def _case_id_from_projection(path: Path) -> str:
     return case_id
 
 
-def _case_id_from_voxel(path: Path) -> str:
+def _case_id_from_voxel(path: Path, case_id_mode: str) -> str:
     try:
         with np.load(path, allow_pickle=False) as data:
             if "case_id" in data:
                 case_id = _validated_case_id(
-                    _scalar(data, "case_id", path), path
+                    _scalar(data, "case_id", path), path, case_id_mode
                 )
             else:
-                case_id = _validated_case_id(path.stem, path)
+                case_id = _validated_case_id(path.stem, path, case_id_mode)
     except (OSError, ValueError) as error:
         if isinstance(error, Stage2NPZError):
             raise
@@ -200,6 +208,11 @@ class Stage2NPZDataset:
             per-case metadata is rejected before training/evaluation.
         random_seed: Base seed for deterministic random pair selection.
         output_type: ``"numpy"`` or ``"torch"``.  Torch is imported lazily.
+        case_id_mode: ``"literal"`` preserves IDs verbatim;
+            ``"imagecas_numeric"`` joins numeric voxel stems to prefixed or
+            path-based ImageCAS split/projection identifiers.
+        expected_imager_pixel_spacing_mm: Optional detector-spacing invariant
+            checked against each projection file when it is loaded.
         gt_origin_xyz_mm: Optional lower physical boundary of GT voxel
             ``(0,0,0)``.  When omitted, the source convention is that index
             ``(0,0,0)`` is centred at physical ``(0,0,0)``, so the lower
@@ -222,6 +235,8 @@ class Stage2NPZDataset:
         minimum_pair_angle_deg: float = 0.0,
         output_type: str = "numpy",
         case_ids: Optional[Sequence[str]] = None,
+        case_id_mode: str = "literal",
+        expected_imager_pixel_spacing_mm: Optional[float] = None,
         gt_origin_xyz_mm: Optional[Sequence[float]] = None,
         source_to_isocenter_mm: float = DEFAULT_SOURCE_TO_ISOCENTER_MM,
     ) -> None:
@@ -234,6 +249,11 @@ class Stage2NPZDataset:
             raise ValueError(
                 f"output_type must be one of {sorted(_VALID_OUTPUT_TYPES)}, "
                 f"got {output_type!r}."
+            )
+        if case_id_mode not in VALID_CASE_ID_MODES:
+            raise ValueError(
+                f"case_id_mode must be one of {VALID_CASE_ID_MODES}, "
+                f"got {case_id_mode!r}."
             )
         if view_mode == "fixed":
             if fixed_view_indices is None or len(fixed_view_indices) != 2:
@@ -280,12 +300,27 @@ class Stage2NPZDataset:
             or minimum_pair_angle_deg > 180.0
         ):
             raise ValueError("minimum_pair_angle_deg must lie in [0,180].")
+        expected_pixel_spacing = None
+        if expected_imager_pixel_spacing_mm is not None:
+            expected_pixel_spacing = float(expected_imager_pixel_spacing_mm)
+            if (
+                not np.isfinite(expected_pixel_spacing)
+                or expected_pixel_spacing <= 0.0
+            ):
+                raise ValueError(
+                    "expected_imager_pixel_spacing_mm must be finite and positive."
+                )
 
         requested: Optional[Tuple[str, ...]] = None
         requested_set: Optional[set[str]] = None
         if case_ids is not None:
-            requested = tuple(str(case_id).strip() for case_id in case_ids)
-            if not requested or any(not case_id for case_id in requested):
+            requested = tuple(
+                _validated_case_id(
+                    case_id, Path("<case_ids>"), case_id_mode
+                )
+                for case_id in case_ids
+            )
+            if not requested:
                 raise ValueError("case_ids must contain at least one non-empty ID.")
             if len(set(requested)) != len(requested):
                 raise ValueError("case_ids must not contain duplicates.")
@@ -296,7 +331,7 @@ class Stage2NPZDataset:
 
         voxel_by_case: Dict[str, Path] = {}
         for voxel_path in voxel_files:
-            case_id = _case_id_from_voxel(voxel_path)
+            case_id = _case_id_from_voxel(voxel_path, case_id_mode)
             if case_id in voxel_by_case:
                 raise Stage2NPZError(
                     f"Duplicate voxel files for case_id {case_id!r}: "
@@ -308,7 +343,7 @@ class Stage2NPZDataset:
         missing_cases: List[str] = []
         seen_projection_cases: Dict[str, Path] = {}
         for projection_path in projection_files:
-            case_id = _case_id_from_projection(projection_path)
+            case_id = _case_id_from_projection(projection_path, case_id_mode)
             if case_id in seen_projection_cases:
                 raise Stage2NPZError(
                     f"Duplicate projection files for case_id {case_id!r}: "
@@ -346,6 +381,8 @@ class Stage2NPZDataset:
         self.random_seed = int(random_seed)
         self.minimum_pair_angle_deg = minimum_pair_angle_deg
         self.output_type = output_type
+        self.case_id_mode = case_id_mode
+        self.expected_imager_pixel_spacing_mm = expected_pixel_spacing
         self.gt_origin_xyz_mm = gt_origin
         self.source_to_isocenter_mm = source_to_isocenter_mm
         self.epoch = 0
@@ -360,6 +397,12 @@ class Stage2NPZDataset:
         if epoch < 0:
             raise ValueError("epoch must be non-negative.")
         self.epoch = epoch
+
+    def validate_projection_metadata(self) -> None:
+        """Eagerly validate every indexed projection without loading GT volumes."""
+
+        for record in self.records:
+            self._load_projection(record.projection_path, record.case_id)
 
     def _view_indices(
         self,
@@ -525,7 +568,7 @@ class Stage2NPZDataset:
         try:
             with np.load(path, allow_pickle=False) as data:
                 case_id = _validated_case_id(
-                    _scalar(data, "case_id", path), path
+                    _scalar(data, "case_id", path), path, self.case_id_mode
                 )
                 if case_id != expected_case_id:
                     raise Stage2NPZError(
@@ -583,6 +626,20 @@ class Stage2NPZDataset:
                     _optional_text(data, "imager_pixel_spacing_units"),
                     default_units="mm",
                 )
+                if (
+                    self.expected_imager_pixel_spacing_mm is not None
+                    and not np.isclose(
+                        pixel_spacing_mm,
+                        self.expected_imager_pixel_spacing_mm,
+                        rtol=0.0,
+                        atol=1e-5,
+                    )
+                ):
+                    raise Stage2NPZError(
+                        f"imager_pixel_spacing in {path} is "
+                        f"{pixel_spacing_mm:g} mm, expected "
+                        f"{self.expected_imager_pixel_spacing_mm:g} mm."
+                    )
 
                 center_offset = _finite_numeric_array(
                     data, "projection_center_offset", path, (3,)
