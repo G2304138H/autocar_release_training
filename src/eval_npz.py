@@ -63,6 +63,8 @@ class EvaluationOptions:
     case_splits: Mapping[str, str]
     case_id_mode: str
     expected_imager_pixel_spacing_mm: float | None
+    fallback_imager_pixel_spacing_mm: float | None
+    fallback_sid_mm: float | None
     view_indices: tuple[int, int]
     view_labels: tuple[str, str] | None
     device: str
@@ -470,6 +472,41 @@ def resolve_evaluation_options(
         raise ValueError(
             "expected_imager_pixel_spacing_mm must be null or finite and positive."
         )
+    raw_fallback_pixel_spacing = config.get("fallback_imager_pixel_spacing_mm")
+    fallback_pixel_spacing = (
+        None
+        if raw_fallback_pixel_spacing is None
+        else float(raw_fallback_pixel_spacing)
+    )
+    if fallback_pixel_spacing is not None and (
+        not math.isfinite(fallback_pixel_spacing) or fallback_pixel_spacing <= 0
+    ):
+        raise ValueError(
+            "fallback_imager_pixel_spacing_mm must be null or finite and positive."
+        )
+    if (
+        fallback_pixel_spacing is not None
+        and expected_pixel_spacing is not None
+        and not math.isclose(
+            fallback_pixel_spacing,
+            expected_pixel_spacing,
+            rel_tol=0.0,
+            abs_tol=1e-5,
+        )
+    ):
+        raise ValueError(
+            "fallback_imager_pixel_spacing_mm must match "
+            "expected_imager_pixel_spacing_mm when both are configured."
+        )
+    raw_fallback_sid = config.get("fallback_sid_mm")
+    fallback_sid = None if raw_fallback_sid is None else float(raw_fallback_sid)
+    if fallback_sid is not None and (
+        not math.isfinite(fallback_sid) or fallback_sid <= source_to_isocenter_mm
+    ):
+        raise ValueError(
+            "fallback_sid_mm must be null, finite, and greater than "
+            "source_to_isocenter_mm."
+        )
     if config.get("save_prediction_npz_files", True) is not True:
         raise ValueError(
             "save_prediction_npz_files must be true for the AutoCAR evaluation runner."
@@ -517,6 +554,8 @@ def resolve_evaluation_options(
             "eval_case_ids": list(case_ids),
             "case_id_mode": case_id_mode,
             "expected_imager_pixel_spacing_mm": expected_pixel_spacing,
+            "fallback_imager_pixel_spacing_mm": fallback_pixel_spacing,
+            "fallback_sid_mm": fallback_sid,
             "evaluation_view_indices": list(view_indices),
             "evaluation_view_labels": None if view_labels is None else list(view_labels),
             "eval_num_views": len(view_indices),
@@ -546,6 +585,8 @@ def resolve_evaluation_options(
         case_splits=case_splits,
         case_id_mode=case_id_mode,
         expected_imager_pixel_spacing_mm=expected_pixel_spacing,
+        fallback_imager_pixel_spacing_mm=fallback_pixel_spacing,
+        fallback_sid_mm=fallback_sid,
         view_indices=(view_indices[0], view_indices[1]),
         view_labels=view_labels,
         device=str(config.get("device", "auto")),
@@ -1327,6 +1368,10 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         expected_imager_pixel_spacing_mm=(
             options.expected_imager_pixel_spacing_mm
         ),
+        fallback_imager_pixel_spacing_mm=(
+            options.fallback_imager_pixel_spacing_mm
+        ),
+        fallback_sid_mm=options.fallback_sid_mm,
         gt_origin_xyz_mm=options.ground_truth_origin_xyz_mm,
         source_to_isocenter_mm=options.source_to_isocenter_mm,
     )
@@ -1617,6 +1662,10 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         "expected_imager_pixel_spacing_mm": (
             options.expected_imager_pixel_spacing_mm
         ),
+        "fallback_imager_pixel_spacing_mm": (
+            options.fallback_imager_pixel_spacing_mm
+        ),
+        "fallback_sid_mm": options.fallback_sid_mm,
         "max_visualizations": options.max_visualizations,
         "device": str(device),
         "inference_precision": "16-mixed" if use_mixed_precision else "32",

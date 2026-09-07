@@ -69,6 +69,9 @@ def test_config_resolves_relative_paths_and_visualization_alias(tmp_path):
                 "eval_split": "val_test",
                 "evaluation_view_indices": [0, 6],
                 "evaluation_view_labels": None,
+                "expected_imager_pixel_spacing_mm": 0.55,
+                "fallback_imager_pixel_spacing_mm": 0.55,
+                "fallback_sid_mm": 900.0,
                 "max_visualizations": "all",
             }
         ),
@@ -82,6 +85,9 @@ def test_config_resolves_relative_paths_and_visualization_alias(tmp_path):
     assert options.case_splits == {"2": "validation", "3": "test"}
     assert options.max_visualizations == 2
     assert options.view_labels is None
+    assert options.expected_imager_pixel_spacing_mm == 0.55
+    assert options.fallback_imager_pixel_spacing_mm == 0.55
+    assert options.fallback_sid_mm == 900.0
     assert options.output_dir == (tmp_path / "result").resolve()
 
 
@@ -198,6 +204,8 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
     monkeypatch,
     tmp_path,
 ):
+    dataset_kwargs = {}
+
     class FakeModel:
         sparse_backend = "raw"
         recon_net = SimpleNamespace(expected_view_count=2)
@@ -215,6 +223,7 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
 
     class FakeDataset:
         def __init__(self, *args, **kwargs):
+            dataset_kwargs.update(kwargs)
             self.samples = [
                 {
                     "case_id": "2",
@@ -297,7 +306,9 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
         case_ids=("2",),
         case_splits={"2": "validation"},
         case_id_mode="literal",
-        expected_imager_pixel_spacing_mm=None,
+        expected_imager_pixel_spacing_mm=0.55,
+        fallback_imager_pixel_spacing_mm=0.55,
+        fallback_sid_mm=900.0,
         view_indices=(0, 6),
         view_labels=("first", "second"),
         device="cpu",
@@ -327,6 +338,9 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
         (output_dir / "predictions" / "manifest.json").read_text()
     )
     assert manifest["num_files"] == 1
+    assert dataset_kwargs["expected_imager_pixel_spacing_mm"] == 0.55
+    assert dataset_kwargs["fallback_imager_pixel_spacing_mm"] == 0.55
+    assert dataset_kwargs["fallback_sid_mm"] == 900.0
     assert summary["roles"]["final"]["masked_dice_3d"] == 1.0
     assert (output_dir / "metrics" / "flat_per_case_metrics.csv").is_file()
     assert (output_dir / "evaluation_record.json").is_file()

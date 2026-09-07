@@ -578,6 +578,35 @@ normalized IDs), set `case_id_mode` to `"imagecas_numeric"`. Set
 `expected_imager_pixel_spacing_mm` to the artery-specific detector spacing
 when it is known (`0.65` for the supplied LCA inputs and `0.55` for RCA).
 
+To run the paper-metric protocol over validation plus test for both trained
+artery models, use the paired launcher:
+
+```bash
+python scripts/evaluate_imagecas_npz.py \
+  --lca-checkpoint /path/to/lca/checkpoints/epoch_XXX.ckpt \
+  --rca-checkpoint /path/to/rca/checkpoints/epoch_YYY.ckpt \
+  --output-root /path/to/results/autocar_paper_metrics
+```
+
+If the runs were written below the default Hydra log layout, explicit paths
+are optional: the launcher searches the newest completed
+`logs/train_autocar_{lca,rca}/runs/*` directory and selects its unique
+non-`last.ckpt` checkpoint. `--lca-experiment-dir` and
+`--rca-experiment-dir` select particular runs without spelling out checkpoint
+filenames. Use `--dry-run` to validate both checkpoints and all data paths and
+write the resolved evaluation configs without loading either model.
+
+Each artery runs in a separate process on the fixed views `[0, 6]` with
+`evaluation_mode: "paper_metric"`, `eval_split: "val_test"`, and all cases.
+The launcher saves the generated configs and `evaluation_plan.json` at the
+output root. Each `lca/` and `rca/` directory receives the full prediction,
+metric, mask, timing, and audit artifacts described above. After both finish,
+`combined_paper_metric_summary.json` indexes their separate summaries; it does
+not pool statistics across the two anatomies. Both runs apply the same legacy
+metadata fallbacks as training: a 900 mm SID, with 0.65 mm detector spacing for
+LCA and 0.55 mm for RCA. Values present in projection NPZ files still take
+precedence and are validated against the expected artery spacing.
+
 The framework-independent evaluator accepts one exported probability or logit
 volume from AutoCAR or another method at a time. Its command interface is:
 

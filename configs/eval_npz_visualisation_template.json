@@ -17,6 +17,8 @@
   "evaluation_view_labels": ["RAO 25, CAU 35", "LAO 5, CRA 40"],
   "case_id_mode": "literal",
   "expected_imager_pixel_spacing_mm": null,
+  "fallback_imager_pixel_spacing_mm": null,
+  "fallback_sid_mm": null,
   "save_prediction_npz_files": true,
   "max_visualizations": 20,
 
