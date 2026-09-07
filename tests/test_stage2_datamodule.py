@@ -4,7 +4,10 @@ import json
 
 import pytest
 
-from src.dataset.case_splits import load_case_splits
+from src.dataset.case_splits import (
+    apply_training_case_exclusions,
+    load_case_splits,
+)
 
 
 def test_split_manifest_rejects_case_leakage(tmp_path):
@@ -62,6 +65,43 @@ def test_split_manifest_detects_duplicates_after_normalisation(tmp_path):
     )
     with pytest.raises(ValueError, match="duplicate"):
         load_case_splits(path, case_id_mode="imagecas_numeric")
+
+
+def test_training_exclusions_are_normalised_and_audited():
+    splits = {
+        "train": ("108", "207", "324"),
+        "val": ("1",),
+        "test": ("2",),
+    }
+
+    filtered, removed, absent = apply_training_case_exclusions(
+        splits,
+        ("0108", "0324", "0909"),
+        case_id_mode="imagecas_numeric",
+    )
+
+    assert filtered == {
+        "train": ("207",),
+        "val": ("1",),
+        "test": ("2",),
+    }
+    assert removed == ("108", "324")
+    assert absent == ("909",)
+
+
+def test_training_exclusions_cannot_change_evaluation_cohort():
+    splits = {
+        "train": ("1",),
+        "val": ("288",),
+        "test": ("2",),
+    }
+
+    with pytest.raises(ValueError, match="validation/test"):
+        apply_training_case_exclusions(
+            splits,
+            ("0288",),
+            case_id_mode="imagecas_numeric",
+        )
 
 
 def test_datamodule_rejects_variable_shape_batching():

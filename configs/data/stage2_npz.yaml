@@ -18,4 +18,5 @@ batch_size: 1
 num_workers: 2
 random_seed: ${seed}
 minimum_train_pair_angle_deg: 30.0
+excluded_train_case_ids: []
 pin_memory: true

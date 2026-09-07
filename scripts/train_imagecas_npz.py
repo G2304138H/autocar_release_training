@@ -14,7 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.dataset.case_splits import load_case_splits
+from src.dataset.case_splits import (
+    apply_training_case_exclusions,
+    load_case_splits,
+)
 from src.dataset.stage2_npz import Stage2NPZDataset
 
 
@@ -37,6 +40,7 @@ DATASETS = {
         "source_to_isocenter_mm": 750.0,
         "view_indices": (0, 6),
         "view_labels": ("RAO 25, CAU 35", "LAO 5, CRA 40"),
+        "excluded_train_case_ids": ("288", "421"),
     },
     "rca": {
         "experiment": "stage2_npz_rca",
@@ -56,6 +60,14 @@ DATASETS = {
         "source_to_isocenter_mm": 750.0,
         "view_indices": (0, 6),
         "view_labels": None,
+        "excluded_train_case_ids": (
+            "0288",
+            "0421",
+            "0909",
+            "0108",
+            "0207",
+            "0324",
+        ),
     },
 }
 
@@ -124,6 +136,7 @@ def _resolved_settings(args: argparse.Namespace) -> dict[str, object]:
         if args.evaluation_view_indices is not None
         else defaults["view_indices"],
         "view_labels": defaults["view_labels"],
+        "excluded_train_case_ids": defaults["excluded_train_case_ids"],
     }
 
 
@@ -139,7 +152,12 @@ def _preflight(settings: dict[str, object]) -> None:
         if not path.exists():
             raise FileNotFoundError(f"{label} does not exist: {path}")
 
-    splits = load_case_splits(split_json, case_id_mode="imagecas_numeric")
+    raw_splits = load_case_splits(split_json, case_id_mode="imagecas_numeric")
+    splits, removed, absent = apply_training_case_exclusions(
+        raw_splits,
+        settings["excluded_train_case_ids"],
+        case_id_mode="imagecas_numeric",
+    )
     all_case_ids = tuple(
         case_id
         for split_name in ("train", "val", "test")
@@ -164,8 +182,16 @@ def _preflight(settings: dict[str, object]) -> None:
         record.case_id: index for index, record in enumerate(dataset.records)
     }
     print(
-        "Split counts: "
+        "Split counts after training exclusions: "
         + ", ".join(f"{name}={len(splits[name])}" for name in splits)
+    )
+    print(
+        "Applied training exclusions: "
+        + (", ".join(removed) if removed else "none")
+    )
+    print(
+        "Requested exclusions absent from split manifest: "
+        + (", ".join(absent) if absent else "none")
     )
     for split_name in ("train", "val", "test"):
         case_id = splits[split_name][0]
@@ -206,6 +232,11 @@ def _hydra_command(
         f"[{int(settings['view_indices'][0])},{int(settings['view_indices'][1])}]",
         f"data.num_workers={args.num_workers}",
         f"trainer.max_epochs={args.max_epochs}",
+        "data.excluded_train_case_ids=["
+        + ",".join(
+            f'"{case_id}"' for case_id in settings["excluded_train_case_ids"]
+        )
+        + "]",
     ]
     if settings["fallback_pixel_spacing_mm"] is not None:
         command.append(

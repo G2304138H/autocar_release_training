@@ -19,6 +19,7 @@ def test_launcher_uses_supplied_lca_defaults():
         "RAO 25, CAU 35",
         "LAO 5, CRA 40",
     )
+    assert settings["excluded_train_case_ids"] == ("288", "421")
 
 
 def test_launcher_builds_rca_debug_command_without_a_shell():
@@ -42,6 +43,11 @@ def test_launcher_builds_rca_debug_command_without_a_shell():
     assert "data.fallback_imager_pixel_spacing_mm=0.55" in command
     assert "data.fallback_sid_mm=900" in command
     assert "data.source_to_isocenter_mm=750" in command
+    assert (
+        "data.excluded_train_case_ids="
+        '["0288","0421","0909","0108","0207","0324"]'
+        in command
+    )
     assert "trainer.max_epochs=3" in command
     assert "debug=stage2_gpu" in command
     assert "--" not in command

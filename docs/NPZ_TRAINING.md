@@ -448,6 +448,13 @@ re-raised with its phase, one-based epoch and batch numbers, case ID, and input
 path. Non-finite sparse logits or losses are rejected immediately so numerical
 failure is attributed to the first batch where it is observed.
 
+The maintained artery configurations also declare training-only case
+exclusions. LCA excludes `288` and `421`; RCA excludes `0288`, `0421`, `0909`,
+`0108`, `0207`, and `0324`. IDs are normalized before filtering. Preflight
+reports both the exclusions actually removed and requests already absent from
+the split manifest. A requested training exclusion found in validation or test
+is rejected rather than silently changing the evaluation cohort.
+
 For a one-batch end-to-end CUDA check, use the dedicated GPU debug profile:
 
 ```bash

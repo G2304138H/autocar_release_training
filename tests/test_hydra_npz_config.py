@@ -97,6 +97,7 @@ def test_imagecas_artery_experiments_compose_cluster_paths(
     assert list(config.data.evaluation_view_indices) == [0, 6]
     assert config.trainer.precision == "32-true"
     if artery == "lca":
+        assert list(config.data.excluded_train_case_ids) == ["288", "421"]
         assert config.data.fallback_imager_pixel_spacing_mm == pytest.approx(0.65)
         assert config.data.fallback_sid_mm == pytest.approx(900.0)
         assert list(config.data.evaluation_view_labels) == [
@@ -104,6 +105,14 @@ def test_imagecas_artery_experiments_compose_cluster_paths(
             "LAO 5, CRA 40",
         ]
     else:
+        assert list(config.data.excluded_train_case_ids) == [
+            "0288",
+            "0421",
+            "0909",
+            "0108",
+            "0207",
+            "0324",
+        ]
         assert config.data.fallback_imager_pixel_spacing_mm == pytest.approx(0.55)
         assert config.data.fallback_sid_mm == pytest.approx(900.0)
         assert config.data.evaluation_view_labels is None

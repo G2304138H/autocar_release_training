@@ -7,7 +7,10 @@ from typing import Any, Sequence
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader
 
-from src.dataset.case_splits import load_case_splits
+from src.dataset.case_splits import (
+    apply_training_case_exclusions,
+    load_case_splits,
+)
 from src.dataset.stage2_npz import Stage2NPZDataset
 
 
@@ -34,6 +37,7 @@ class Stage2NPZDataModule(LightningDataModule):
         num_workers: int = 0,
         random_seed: int = 42,
         minimum_train_pair_angle_deg: float = 30.0,
+        excluded_train_case_ids: Sequence[str] = (),
         case_id_mode: str = "literal",
         expected_imager_pixel_spacing_mm: float | None = None,
         fallback_imager_pixel_spacing_mm: float | None = None,
@@ -77,6 +81,7 @@ class Stage2NPZDataModule(LightningDataModule):
         self.minimum_train_pair_angle_deg = float(
             minimum_train_pair_angle_deg
         )
+        self.excluded_train_case_ids = tuple(excluded_train_case_ids)
         self.case_id_mode = str(case_id_mode)
         self.expected_imager_pixel_spacing_mm = (
             None
@@ -96,10 +101,21 @@ class Stage2NPZDataModule(LightningDataModule):
         self.data_train: Stage2NPZDataset | None = None
         self.data_val: Stage2NPZDataset | None = None
         self.data_test: Stage2NPZDataset | None = None
+        self.applied_train_case_exclusions: tuple[str, ...] = ()
+        self.unmatched_train_case_exclusions: tuple[str, ...] = ()
 
     def setup(self, stage: str | None = None) -> None:
         splits = load_case_splits(
             self.split_json, case_id_mode=self.case_id_mode
+        )
+        (
+            splits,
+            self.applied_train_case_exclusions,
+            self.unmatched_train_case_exclusions,
+        ) = apply_training_case_exclusions(
+            splits,
+            self.excluded_train_case_ids,
+            case_id_mode=self.case_id_mode,
         )
         common: dict[str, Any] = {
             "projection_source": self.projection_source,

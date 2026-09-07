@@ -25,4 +25,5 @@ batch_size: 1
 num_workers: 0
 random_seed: ${seed}
 minimum_train_pair_angle_deg: 30.0
+excluded_train_case_ids: ["0288", "0421", "0909", "0108", "0207", "0324"]
 pin_memory: true
