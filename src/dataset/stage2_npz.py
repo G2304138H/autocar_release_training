@@ -213,6 +213,10 @@ class Stage2NPZDataset:
             path-based ImageCAS split/projection identifiers.
         expected_imager_pixel_spacing_mm: Optional detector-spacing invariant
             checked against each projection file when it is loaded.
+        fallback_imager_pixel_spacing_mm: Detector spacing in millimetres used
+            only when ``imager_pixel_spacing`` is absent from a projection NPZ.
+        fallback_sid_mm: Source-to-detector distance in millimetres used only
+            when ``sid`` is absent from a projection NPZ.
         gt_origin_xyz_mm: Optional lower physical boundary of GT voxel
             ``(0,0,0)``.  When omitted, the source convention is that index
             ``(0,0,0)`` is centred at physical ``(0,0,0)``, so the lower
@@ -237,6 +241,8 @@ class Stage2NPZDataset:
         case_ids: Optional[Sequence[str]] = None,
         case_id_mode: str = "literal",
         expected_imager_pixel_spacing_mm: Optional[float] = None,
+        fallback_imager_pixel_spacing_mm: Optional[float] = None,
+        fallback_sid_mm: Optional[float] = None,
         gt_origin_xyz_mm: Optional[Sequence[float]] = None,
         source_to_isocenter_mm: float = DEFAULT_SOURCE_TO_ISOCENTER_MM,
     ) -> None:
@@ -309,6 +315,39 @@ class Stage2NPZDataset:
             ):
                 raise ValueError(
                     "expected_imager_pixel_spacing_mm must be finite and positive."
+                )
+        fallback_pixel_spacing = None
+        if fallback_imager_pixel_spacing_mm is not None:
+            fallback_pixel_spacing = float(fallback_imager_pixel_spacing_mm)
+            if (
+                not np.isfinite(fallback_pixel_spacing)
+                or fallback_pixel_spacing <= 0.0
+            ):
+                raise ValueError(
+                    "fallback_imager_pixel_spacing_mm must be finite and positive."
+                )
+        if (
+            expected_pixel_spacing is not None
+            and fallback_pixel_spacing is not None
+            and not np.isclose(
+                fallback_pixel_spacing,
+                expected_pixel_spacing,
+                rtol=0.0,
+                atol=1e-5,
+            )
+        ):
+            raise ValueError(
+                "fallback_imager_pixel_spacing_mm must match "
+                "expected_imager_pixel_spacing_mm when both are configured."
+            )
+        fallback_sid = None
+        if fallback_sid_mm is not None:
+            fallback_sid = float(fallback_sid_mm)
+            if not np.isfinite(fallback_sid) or fallback_sid <= 0.0:
+                raise ValueError("fallback_sid_mm must be finite and positive.")
+            if fallback_sid <= source_to_isocenter_mm:
+                raise ValueError(
+                    "fallback_sid_mm must exceed source_to_isocenter_mm."
                 )
 
         requested: Optional[Tuple[str, ...]] = None
@@ -383,6 +422,8 @@ class Stage2NPZDataset:
         self.output_type = output_type
         self.case_id_mode = case_id_mode
         self.expected_imager_pixel_spacing_mm = expected_pixel_spacing
+        self.fallback_imager_pixel_spacing_mm = fallback_pixel_spacing
+        self.fallback_sid_mm = fallback_sid
         self.gt_origin_xyz_mm = gt_origin
         self.source_to_isocenter_mm = source_to_isocenter_mm
         self.epoch = 0
@@ -535,12 +576,16 @@ class Stage2NPZDataset:
             ).astype(np.float32, copy=False),
             "image_dim": np.int64(geometry.image_dim),
             "sid_mm": np.float32(geometry.sid_mm),
+            "sid_source": projection["sid_source"],
             "source_to_isocenter_mm": np.float32(
                 geometry.source_to_isocenter_mm
             ),
             "imager_pixel_spacing_mm": np.float32(
                 geometry.pixel_spacing_mm
             ),
+            "imager_pixel_spacing_source": projection[
+                "imager_pixel_spacing_source"
+            ],
         }
         if pair_angle_deg is not None:
             sample["pair_angle_deg"] = pair_angle_deg
@@ -614,18 +659,38 @@ class Stage2NPZDataset:
                         f"with shape {images.shape}."
                     )
 
-                sid = float(_scalar(data, "sid", path))
-                sid_mm = _convert_length_to_mm(
-                    sid, _optional_text(data, "sid_units"), default_units="m"
-                )
-                pixel_spacing = float(
-                    _scalar(data, "imager_pixel_spacing", path)
-                )
-                pixel_spacing_mm = _convert_length_to_mm(
-                    pixel_spacing,
-                    _optional_text(data, "imager_pixel_spacing_units"),
-                    default_units="mm",
-                )
+                if "sid" in data:
+                    sid = float(_scalar(data, "sid", path))
+                    sid_mm = _convert_length_to_mm(
+                        sid, _optional_text(data, "sid_units"), default_units="m"
+                    )
+                    sid_source = "npz"
+                elif self.fallback_sid_mm is not None:
+                    sid_mm = self.fallback_sid_mm
+                    sid_source = "config"
+                else:
+                    raise Stage2NPZError(
+                        f"Missing required key 'sid' in {path}; configure "
+                        "fallback_sid_mm for legacy files."
+                    )
+                if "imager_pixel_spacing" in data:
+                    pixel_spacing = float(
+                        _scalar(data, "imager_pixel_spacing", path)
+                    )
+                    pixel_spacing_mm = _convert_length_to_mm(
+                        pixel_spacing,
+                        _optional_text(data, "imager_pixel_spacing_units"),
+                        default_units="mm",
+                    )
+                    pixel_spacing_source = "npz"
+                elif self.fallback_imager_pixel_spacing_mm is not None:
+                    pixel_spacing_mm = self.fallback_imager_pixel_spacing_mm
+                    pixel_spacing_source = "config"
+                else:
+                    raise Stage2NPZError(
+                        f"Missing required key 'imager_pixel_spacing' in {path}; "
+                        "configure fallback_imager_pixel_spacing_mm for legacy files."
+                    )
                 if (
                     self.expected_imager_pixel_spacing_mm is not None
                     and not np.isclose(
@@ -711,6 +776,8 @@ class Stage2NPZDataset:
                     "projection_center_offset_xyz_mm": np.ascontiguousarray(
                         center_offset_mm, dtype=np.float32
                     ),
+                    "sid_source": sid_source,
+                    "imager_pixel_spacing_source": pixel_spacing_source,
                     "_geometry": geometry,
                 }
 

@@ -70,6 +70,14 @@ def _write_voxel(path: Path, case_id=None) -> np.ndarray:
     return volume_xyz
 
 
+def _drop_projection_fields(path: Path, *fields: str) -> None:
+    with np.load(path, allow_pickle=False) as data:
+        payload = {
+            key: np.asarray(data[key]) for key in data.files if key not in fields
+        }
+    np.savez_compressed(path, **payload)
+
+
 class Stage2NPZDatasetTests(unittest.TestCase):
     def test_pairs_by_case_id_and_canonicalises_layout(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -161,6 +169,71 @@ class Stage2NPZDatasetTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(Stage2NPZError, "expected 0.65 mm"):
                 _ = mismatching[0]
+
+    def test_legacy_geometry_fields_use_explicit_config_fallbacks(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection_path = root / "projection.npz"
+            voxel_path = root / "42.npz"
+            _write_projection(projection_path, pixel_spacing_mm=0.55)
+            _drop_projection_fields(
+                projection_path, "sid", "imager_pixel_spacing"
+            )
+            _write_voxel(voxel_path)
+
+            dataset = Stage2NPZDataset(
+                projection_path,
+                voxel_path,
+                fallback_sid_mm=900.0,
+                fallback_imager_pixel_spacing_mm=0.55,
+                expected_imager_pixel_spacing_mm=0.55,
+            )
+            sample = dataset[0]
+
+            self.assertEqual(float(sample["sid_mm"]), 900.0)
+            self.assertAlmostEqual(
+                float(sample["imager_pixel_spacing_mm"]), 0.55
+            )
+            self.assertEqual(sample["sid_source"], "config")
+            self.assertEqual(
+                sample["imager_pixel_spacing_source"], "config"
+            )
+
+    def test_npz_geometry_fields_take_precedence_over_fallbacks(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection_path = root / "projection.npz"
+            voxel_path = root / "42.npz"
+            _write_projection(projection_path, pixel_spacing_mm=0.65)
+            _write_voxel(voxel_path)
+
+            dataset = Stage2NPZDataset(
+                projection_path,
+                voxel_path,
+                fallback_sid_mm=1200.0,
+                fallback_imager_pixel_spacing_mm=0.55,
+            )
+            sample = dataset[0]
+
+            self.assertEqual(float(sample["sid_mm"]), 900.0)
+            self.assertAlmostEqual(
+                float(sample["imager_pixel_spacing_mm"]), 0.65
+            )
+            self.assertEqual(sample["sid_source"], "npz")
+            self.assertEqual(sample["imager_pixel_spacing_source"], "npz")
+
+    def test_legacy_geometry_fields_without_fallback_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection_path = root / "projection.npz"
+            voxel_path = root / "42.npz"
+            _write_projection(projection_path)
+            _drop_projection_fields(projection_path, "sid")
+            _write_voxel(voxel_path)
+
+            dataset = Stage2NPZDataset(projection_path, voxel_path)
+            with self.assertRaisesRegex(Stage2NPZError, "fallback_sid_mm"):
+                _ = dataset[0]
 
     def test_eager_projection_validation_checks_every_record(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

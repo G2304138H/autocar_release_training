@@ -135,7 +135,10 @@ The cluster-specific inputs are configured in
 `configs/data/stage2_npz_lca.yaml` and
 `configs/data/stage2_npz_rca.yaml`. The loader reads detector spacing from each
 projection NPZ and checks it against the declared artery-level invariant:
-0.65 mm for LCA and 0.55 mm for RCA. It never silently replaces file metadata.
+0.65 mm for LCA and 0.55 mm for RCA. Per-case metadata takes precedence when
+present. For legacy RCA files only, the configuration supplies the known
+0.55 mm spacing and 900 mm SID when those keys are absent; every sample records
+whether each value came from the NPZ or configuration.
 
 ### Projection NPZ contract
 
@@ -147,8 +150,8 @@ Required fields:
 | `images` | Binary/soft projection masks with shape `[V,H,W]` |
 | `theta_deg`, `phi_deg` | One camera angle pair per view |
 | `image_dim` | Detector image size in pixels |
-| `sid` | Source-to-detector distance in metres |
-| `imager_pixel_spacing` | Detector pixel spacing in millimetres |
+| `sid` | Source-to-detector distance in metres; may be omitted only when `fallback_sid_mm` is configured |
+| `imager_pixel_spacing` | Detector pixel spacing in millimetres; may be omitted only when `fallback_imager_pixel_spacing_mm` is configured |
 | `projection_center_offset` | XYZ reconstruction centre in source units |
 
 `input_scale_to_mm` is used to convert the centre offset to millimetres and
@@ -195,6 +198,8 @@ Stage2NPZDataset(
     case_ids=None,
     case_id_mode="literal",          # or "imagecas_numeric"
     expected_imager_pixel_spacing_mm=None,
+    fallback_imager_pixel_spacing_mm=None,
+    fallback_sid_mm=None,
     gt_origin_xyz_mm=None,
     source_to_isocenter_mm=750.0,
 )
@@ -213,6 +218,9 @@ world2pix4x4                    [selected_V, 4, 4] float32
 camera_source_xyz_mm            [selected_V, 3] float32
 detector_center_xyz_mm          [selected_V, 3] float32
 detector_x_xyz/detector_y_xyz   [selected_V, 3] float32
+sid_mm / sid_source             scalar float32 / "npz" or "config"
+imager_pixel_spacing_mm         scalar float32
+imager_pixel_spacing_source     "npz" or "config"
 view_directions_world           [selected_V, 3] float32
 view_indices                    [selected_V] int64
 pair_angle_deg                  scalar float32 (two-view samples only)
@@ -228,7 +236,11 @@ different lower-bound origin; the override is a boundary, not a voxel centre.
 `fixed_view_labels` makes fixed-index evaluation fail early when a case is
 missing the expected `anchor_clinical_views` metadata or has different labels.
 `expected_imager_pixel_spacing_mm` likewise turns an artery/path mix-up into a
-clear error before training.
+clear error before training. The fallback values are explicitly millimetres;
+they are consulted only for a missing field and never overwrite a value stored
+in a case file. The maintained RCA configuration uses 900 mm SID, 750 mm
+source-to-isocentre distance, and 0.55 mm detector spacing. LCA keeps both
+fallbacks disabled because its current files provide the metadata.
 
 Supported view policies are:
 

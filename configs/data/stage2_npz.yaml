@@ -6,6 +6,9 @@ voxel_source: ${paths.data_dir}stage2/voxels
 split_json: ${paths.data_dir}stage2/splits.json
 case_id_mode: literal
 expected_imager_pixel_spacing_mm: null
+fallback_imager_pixel_spacing_mm: null
+fallback_sid_mm: null
+source_to_isocenter_mm: 750.0
 
 # Slots 0 and 6 are the most widely separated fixed clinical anchors in the
 # supplied seven-view schema. Use the identical two views for every comparator.

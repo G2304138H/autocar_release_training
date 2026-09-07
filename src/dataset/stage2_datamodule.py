@@ -36,6 +36,9 @@ class Stage2NPZDataModule(LightningDataModule):
         minimum_train_pair_angle_deg: float = 30.0,
         case_id_mode: str = "literal",
         expected_imager_pixel_spacing_mm: float | None = None,
+        fallback_imager_pixel_spacing_mm: float | None = None,
+        fallback_sid_mm: float | None = None,
+        source_to_isocenter_mm: float = 750.0,
         pin_memory: bool = True,
     ) -> None:
         super().__init__()
@@ -80,6 +83,15 @@ class Stage2NPZDataModule(LightningDataModule):
             if expected_imager_pixel_spacing_mm is None
             else float(expected_imager_pixel_spacing_mm)
         )
+        self.fallback_imager_pixel_spacing_mm = (
+            None
+            if fallback_imager_pixel_spacing_mm is None
+            else float(fallback_imager_pixel_spacing_mm)
+        )
+        self.fallback_sid_mm = (
+            None if fallback_sid_mm is None else float(fallback_sid_mm)
+        )
+        self.source_to_isocenter_mm = float(source_to_isocenter_mm)
         self.pin_memory = bool(pin_memory)
         self.data_train: Stage2NPZDataset | None = None
         self.data_val: Stage2NPZDataset | None = None
@@ -97,6 +109,11 @@ class Stage2NPZDataModule(LightningDataModule):
             "expected_imager_pixel_spacing_mm": (
                 self.expected_imager_pixel_spacing_mm
             ),
+            "fallback_imager_pixel_spacing_mm": (
+                self.fallback_imager_pixel_spacing_mm
+            ),
+            "fallback_sid_mm": self.fallback_sid_mm,
+            "source_to_isocenter_mm": self.source_to_isocenter_mm,
         }
         if stage in (None, "fit", "validate"):
             self.data_train = Stage2NPZDataset(

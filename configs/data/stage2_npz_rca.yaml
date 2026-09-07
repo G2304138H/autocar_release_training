@@ -10,6 +10,12 @@ split_json: /export/home2/reny0012/result/vessel_trees/experiments_for_paper/exp
 case_id_mode: imagecas_numeric
 expected_imager_pixel_spacing_mm: 0.55
 
+# Older RCA projection files omit these fields. Values are in millimetres and
+# match the imagecas_autocar_6 projection configuration (SID 0.9 m).
+fallback_imager_pixel_spacing_mm: 0.55
+fallback_sid_mm: 900.0
+source_to_isocenter_mm: 750.0
+
 # The RCA anchor labels were not supplied. Slots 0 and 6 are provisional until
 # their clinical labels are checked on the cluster; their angle is always
 # recorded in validation/test outputs.

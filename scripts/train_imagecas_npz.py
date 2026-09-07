@@ -32,6 +32,9 @@ DATASETS = {
             "refiner_5mm/split.json"
         ),
         "pixel_spacing_mm": 0.65,
+        "fallback_pixel_spacing_mm": None,
+        "fallback_sid_mm": None,
+        "source_to_isocenter_mm": 750.0,
         "view_indices": (0, 6),
         "view_labels": ("RAO 25, CAU 35", "LAO 5, CRA 40"),
     },
@@ -48,6 +51,9 @@ DATASETS = {
             "exp6_rca_bspline_parallel_no_cross_vggt_refiner/split.json"
         ),
         "pixel_spacing_mm": 0.55,
+        "fallback_pixel_spacing_mm": 0.55,
+        "fallback_sid_mm": 900.0,
+        "source_to_isocenter_mm": 750.0,
         "view_indices": (0, 6),
         "view_labels": None,
     },
@@ -66,6 +72,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--voxel-source", type=Path)
     parser.add_argument("--split-json", type=Path)
     parser.add_argument("--expected-pixel-spacing-mm", type=float)
+    parser.add_argument("--fallback-pixel-spacing-mm", type=float)
+    parser.add_argument("--fallback-sid-mm", type=float)
+    parser.add_argument("--source-to-isocenter-mm", type=float)
     parser.add_argument(
         "--evaluation-view-indices", type=int, nargs=2, metavar=("FIRST", "SECOND")
     )
@@ -102,6 +111,15 @@ def _resolved_settings(args: argparse.Namespace) -> dict[str, object]:
         "pixel_spacing_mm": args.expected_pixel_spacing_mm
         if args.expected_pixel_spacing_mm is not None
         else defaults["pixel_spacing_mm"],
+        "fallback_pixel_spacing_mm": args.fallback_pixel_spacing_mm
+        if args.fallback_pixel_spacing_mm is not None
+        else defaults["fallback_pixel_spacing_mm"],
+        "fallback_sid_mm": args.fallback_sid_mm
+        if args.fallback_sid_mm is not None
+        else defaults["fallback_sid_mm"],
+        "source_to_isocenter_mm": args.source_to_isocenter_mm
+        if args.source_to_isocenter_mm is not None
+        else defaults["source_to_isocenter_mm"],
         "view_indices": tuple(args.evaluation_view_indices)
         if args.evaluation_view_indices is not None
         else defaults["view_indices"],
@@ -133,6 +151,9 @@ def _preflight(settings: dict[str, object]) -> None:
         case_ids=all_case_ids,
         case_id_mode="imagecas_numeric",
         expected_imager_pixel_spacing_mm=float(settings["pixel_spacing_mm"]),
+        fallback_imager_pixel_spacing_mm=settings["fallback_pixel_spacing_mm"],
+        fallback_sid_mm=settings["fallback_sid_mm"],
+        source_to_isocenter_mm=float(settings["source_to_isocenter_mm"]),
         view_mode="fixed",
         fixed_view_indices=settings["view_indices"],
         fixed_view_labels=settings["view_labels"],
@@ -153,7 +174,9 @@ def _preflight(settings: dict[str, object]) -> None:
         print(
             f"{split_name}: case={case_id}, images={sample['images'].shape}, "
             f"GT={sample['gt_volume_zyx'].shape}, "
-            f"pixel_spacing={float(sample['imager_pixel_spacing_mm']):g} mm, "
+            f"pixel_spacing={float(sample['imager_pixel_spacing_mm']):g} mm "
+            f"({sample['imager_pixel_spacing_source']}), "
+            f"SID={float(sample['sid_mm']):g} mm ({sample['sid_source']}), "
             f"views={sample['view_indices'].tolist()}, labels={labels}, "
             f"pair_angle={float(sample['pair_angle_deg']):.2f} deg"
         )
@@ -177,11 +200,22 @@ def _hydra_command(
         "data.case_id_mode=imagecas_numeric",
         "data.expected_imager_pixel_spacing_mm="
         f"{float(settings['pixel_spacing_mm']):g}",
+        "data.source_to_isocenter_mm="
+        f"{float(settings['source_to_isocenter_mm']):g}",
         "data.evaluation_view_indices="
         f"[{int(settings['view_indices'][0])},{int(settings['view_indices'][1])}]",
         f"data.num_workers={args.num_workers}",
         f"trainer.max_epochs={args.max_epochs}",
     ]
+    if settings["fallback_pixel_spacing_mm"] is not None:
+        command.append(
+            "data.fallback_imager_pixel_spacing_mm="
+            f"{float(settings['fallback_pixel_spacing_mm']):g}"
+        )
+    if settings["fallback_sid_mm"] is not None:
+        command.append(
+            f"data.fallback_sid_mm={float(settings['fallback_sid_mm']):g}"
+        )
     if args.checkpoint is not None:
         command.append(f"ckpt_path={args.checkpoint}")
     if args.log_dir is not None:
