@@ -119,8 +119,13 @@ def _validated_case_id(
 def _case_id_from_projection(path: Path, case_id_mode: str) -> str:
     try:
         with np.load(path, allow_pickle=False) as data:
+            raw_case_id = (
+                _scalar(data, "case_id", path)
+                if "case_id" in data
+                else path.stem
+            )
             case_id = _validated_case_id(
-                _scalar(data, "case_id", path), path, case_id_mode
+                raw_case_id, path, case_id_mode
             )
     except (OSError, ValueError) as error:
         if isinstance(error, Stage2NPZError):
@@ -197,6 +202,9 @@ class Stage2NPZDataset:
 
     Args:
         projection_source: Projection NPZ file, directory, or sequence thereof.
+            A projection file's scalar ``case_id`` is used when present;
+            otherwise its stem is the case ID (for example,
+            ``rca_0001.npz`` is ImageCAS numeric case ``"1"``).
         voxel_source: Voxel NPZ file, directory, or sequence thereof.  A voxel
             file's scalar ``case_id`` is used when present; otherwise its stem
             is the case ID (for example, ``1.npz`` is case ``"1"``).
@@ -612,8 +620,13 @@ class Stage2NPZDataset:
     def _load_projection(self, path: Path, expected_case_id: str) -> Dict[str, Any]:
         try:
             with np.load(path, allow_pickle=False) as data:
+                raw_case_id = (
+                    _scalar(data, "case_id", path)
+                    if "case_id" in data
+                    else path.stem
+                )
                 case_id = _validated_case_id(
-                    _scalar(data, "case_id", path), path, self.case_id_mode
+                    raw_case_id, path, self.case_id_mode
                 )
                 if case_id != expected_case_id:
                     raise Stage2NPZError(

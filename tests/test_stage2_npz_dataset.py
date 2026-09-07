@@ -272,6 +272,25 @@ class Stage2NPZDatasetTests(unittest.TestCase):
             self.assertEqual(dataset.records[0].case_id, "1")
             self.assertEqual(dataset[0]["case_id"], "1")
 
+    def test_imagecas_projection_without_case_id_uses_filename(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection_path = root / "rca_0001.npz"
+            voxel_path = root / "1.npz"
+            _write_projection(projection_path, case_id="unused")
+            _drop_projection_fields(projection_path, "case_id")
+            _write_voxel(voxel_path)
+
+            dataset = Stage2NPZDataset(
+                projection_path,
+                voxel_path,
+                case_ids=["1"],
+                case_id_mode="imagecas_numeric",
+            )
+
+            self.assertEqual(dataset.records[0].case_id, "1")
+            self.assertEqual(dataset[0]["case_id"], "1")
+
     def test_path_like_case_id_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

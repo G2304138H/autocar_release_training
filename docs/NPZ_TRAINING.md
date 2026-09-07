@@ -88,8 +88,10 @@ with the installed cu124 wheels; `torch.version.cuda` should report `12.4`.
 
 ## 2. Expected dataset layout
 
-Projection filenames and voxel filenames do not have to share a stem. Pair
-them through the scalar `case_id` stored in each projection NPZ.
+Projection filenames and voxel filenames do not have to share a stem. The
+loader uses the scalar `case_id` stored in each projection NPZ when present.
+Legacy projection files without that field use their filename stem (for
+example, `rca_0001.npz` normalizes to ImageCAS numeric case `1`).
 
 One practical layout is:
 
