@@ -20,6 +20,7 @@ def test_stage2_experiment_composes_a_consistent_paper_feature_width():
         reconstruction.ray_casting.include_distance_feature
     )
     assert reconstruction.expected_view_count == 2
+    assert reconstruction.encoder2d.working_image_dim == 512
     assert reconstruction.ray_casting.fusion == "concat"
     assert reconstruction.ray_casting.candidate_mode == "voxel_grid"
     assert reconstruction.ray_casting.voxel_chunk_size > 0

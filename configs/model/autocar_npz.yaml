@@ -19,6 +19,10 @@ recon_net:
     # The paper specifies a 12-channel hourglass feature per view.
     out_ch: 12
     input: mask
+    # The released renderer supplied 512x512 masks. Our native projections are
+    # 256x256, which otherwise collapse the four-level hourglass bottom to 1x1.
+    # Only encoder features are resized back; detector geometry remains native.
+    working_image_dim: 512
   ray_casting:
     bbox_min: [-100, -100, -100]
     bbox_max: [100, 100, 100]

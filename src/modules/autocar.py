@@ -5,6 +5,7 @@ If you have any question, please contact zhuyh19@mails.tsinghua.edu.cn
 
 import rootutils
 import torch
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
@@ -34,6 +35,22 @@ class AutoCAR(torch.nn.Module):
             raise ValueError(
                 "encoder2d.input must be 'mask' or 'legacy_exp_distance'."
             )
+        working_image_dim = cfg.encoder2d.get("working_image_dim")
+        if working_image_dim is None:
+            self.encoder_working_image_dim = None
+        else:
+            if isinstance(working_image_dim, bool):
+                raise ValueError("encoder2d.working_image_dim must be an integer.")
+            self.encoder_working_image_dim = int(working_image_dim)
+            if (
+                self.encoder_working_image_dim != working_image_dim
+                or self.encoder_working_image_dim < 256
+                or self.encoder_working_image_dim % 256 != 0
+            ):
+                raise ValueError(
+                    "encoder2d.working_image_dim must be a positive multiple "
+                    "of 256 so the four-level hourglass has aligned shapes."
+                )
         self.encoder2d = StackedHourGlassEncoder(encoder_channels)
         self.ray_casting = SparseBackwardProjection(
             cfg.ray_casting.bbox_min,
@@ -102,6 +119,75 @@ class AutoCAR(torch.nn.Module):
             configured_input_channels, cfg.unet3d.out_channels
         )
 
+    @staticmethod
+    def _resize_encoder_input(
+        encoder_input: torch.Tensor,
+        output_hw: tuple[int, int],
+    ) -> torch.Tensor:
+        """Resize `[B,V,H,W]` views without mixing cases or views."""
+
+        if encoder_input.ndim != 4:
+            raise ValueError(
+                "Encoder input must be [B,V,H,W], got "
+                f"{tuple(encoder_input.shape)}."
+            )
+        batch_size, view_count, height, width = encoder_input.shape
+        if (height, width) == output_hw:
+            return encoder_input
+        flattened = encoder_input.reshape(
+            batch_size * view_count, 1, height, width
+        )
+        resized = F.interpolate(
+            flattened,
+            size=output_hw,
+            mode="bilinear",
+            align_corners=False,
+        )
+        return resized.reshape(batch_size, view_count, *output_hw)
+
+    @staticmethod
+    def _resize_encoder_features(
+        features: torch.Tensor,
+        output_hw: tuple[int, int],
+    ) -> torch.Tensor:
+        """Restore `[B,V,C,H,W]` features to the native detector grid."""
+
+        if features.ndim != 5:
+            raise ValueError(
+                "Encoder features must be [B,V,C,H,W], got "
+                f"{tuple(features.shape)}."
+            )
+        batch_size, view_count, channels, height, width = features.shape
+        if (height, width) == output_hw:
+            return features
+        flattened = features.reshape(
+            batch_size * view_count, channels, height, width
+        )
+        resized = F.interpolate(
+            flattened,
+            size=output_hw,
+            mode="bilinear",
+            align_corners=False,
+        )
+        return resized.reshape(
+            batch_size, view_count, channels, *output_hw
+        )
+
+    def _encode_at_working_resolution(
+        self, encoder_input: torch.Tensor
+    ) -> torch.Tensor:
+        native_hw = tuple(int(value) for value in encoder_input.shape[-2:])
+        if self.encoder_working_image_dim is None:
+            working_hw = native_hw
+        else:
+            working_hw = (
+                self.encoder_working_image_dim,
+                self.encoder_working_image_dim,
+            )
+        working_input = self._resize_encoder_input(encoder_input, working_hw)
+        working_features = self.encoder2d(working_input)
+        return self._resize_encoder_features(working_features, native_hw)
+
     def forward(self, masks, world2pix4x4):
         """
         masks: B x V x H x W, pytorch tensor
@@ -125,8 +211,14 @@ class AutoCAR(torch.nn.Module):
             distance_maps = kornia.contrib.distance_transform(masks_float, 3)
             encoder_input = torch.exp(-distance_maps)
 
-        feature = self.encoder2d(encoder_input)
-        # feature: B x V x C x H x W
+        feature = self._encode_at_working_resolution(encoder_input)
+        # Features are restored to the native detector grid before ray casting.
+        if feature.shape[-2:] != masks.shape[-2:]:
+            raise RuntimeError(
+                "Encoder features do not match the native detector grid: "
+                f"features={tuple(feature.shape[-2:])}, "
+                f"masks={tuple(masks.shape[-2:])}."
+            )
 
         if masks.shape[1] != self.expected_view_count:
             raise ValueError(

@@ -452,6 +452,38 @@ gradients abort before Adam can update the model. If Adam instead produces
 non-finite model state from finite inputs, the next pre-forward check reports
 the preceding optimizer step's contributing cases.
 
+### Paper-resolution encoder adapter
+
+The released camera sampler rendered 512-by-512 masks, while the paired LCA
+and RCA NPZ projections are 256-by-256. Four hourglass pooling levels reduce a
+256-pixel input to a 1-by-1 deepest feature map, where two-view BatchNorm has
+only two values per channel. The maintained NPZ model therefore sets
+`recon_net.encoder2d.working_image_dim=512`.
+
+Only the learned 2D encoder path is resized. Input masks are bilinearly resized
+to 512-by-512 for the unmodified released hourglass, and its learned features are
+then resized back to the native 256-by-256 detector grid. Distance maps,
+camera matrices, detector spacing, and sparse backward projection remain on
+the native grid, so this adapter does not change the physical projection
+geometry.
+
+To test the adapter against a safe epoch-one checkpoint before restarting,
+run:
+
+```bash
+python scripts/train_imagecas_npz.py \
+  --artery lca \
+  --checkpoint /absolute/path/to/safe/last.ckpt \
+  --max-epochs 2 \
+  --numerical-debug \
+  -- model.optimizer.lr=0.0001
+```
+
+If the resumed epoch completes with finite gradients, start the final run from
+scratch rather than using the diagnostic checkpoint. Set
+`model.recon_net.encoder2d.working_image_dim=null` only to reproduce the native
+256-by-256 encoder behavior that exposed the instability.
+
 The experiments use separate task names (`train_autocar_lca` and
 `train_autocar_rca`), so checkpoints and TensorBoard logs do not collide.
 Resume with `--checkpoint /absolute/path/to/last.ckpt`. Start with
