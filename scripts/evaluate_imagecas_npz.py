@@ -527,7 +527,12 @@ def _combined_summary(plans: Sequence[EvaluationPlan]) -> dict[str, Any]:
     for plan in plans:
         paper_path = plan.output_dir / "metrics" / "paper_metric_summary.json"
         performance_path = plan.output_dir / "performance_summary.json"
-        if not paper_path.is_file() or not performance_path.is_file():
+        timing_path = plan.output_dir / "timings" / "processing" / "summary.json"
+        if (
+            not paper_path.is_file()
+            or not performance_path.is_file()
+            or not timing_path.is_file()
+        ):
             raise FileNotFoundError(
                 f"{plan.artery.upper()} evaluation completed without its expected "
                 f"summary files under {plan.output_dir}."
@@ -538,7 +543,9 @@ def _combined_summary(plans: Sequence[EvaluationPlan]) -> dict[str, Any]:
             "output_dir": str(plan.output_dir),
             "performance_summary_file": str(performance_path),
             "paper_metric_summary_file": str(paper_path),
+            "processing_timing_summary_file": str(timing_path),
             "paper_metric": json.loads(paper_path.read_text(encoding="utf-8")),
+            "timing": json.loads(timing_path.read_text(encoding="utf-8")),
         }
     return {
         "schema_version": 1,
@@ -614,6 +621,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary_paths = _summary_paths(plans, output_root=output_root)
     for path in summary_paths:
         _write_json(path, summary)
+    for artery, artery_summary in summary["arteries"].items():
+        timing = artery_summary["timing"]
+        print(
+            f"{artery.upper()} average per case: "
+            f"processing={float(timing['mean_processing_elapsed_ms']):.3f} ms, "
+            f"model_forward={float(timing['mean_inference_elapsed_ms']):.3f} ms "
+            f"(n={int(timing['num_cases'])})"
+        )
     print(
         "Completed paper-metric evaluation: "
         + ", ".join(str(path) for path in summary_paths)

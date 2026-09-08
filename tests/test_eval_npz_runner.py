@@ -14,6 +14,7 @@ from src.eval_npz import (
     EvaluationOptions,
     _paper_metric_case,
     _paper_metric_summary,
+    _processing_timing_summary,
     _save_prediction_npz,
     _selected_split_cases,
     build_parser,
@@ -151,6 +152,32 @@ def test_paper_summary_reports_macro_standard_error_and_micro_dice():
     assert summary["macro_masked_ssim_3d_num_cases"] == 1
 
 
+def test_processing_timing_summary_reports_combined_and_split_averages():
+    rows = [
+        {
+            "case_id": "2",
+            "split": "validation",
+            "inference_elapsed_ms": 10.0,
+            "processing_elapsed_ms": 30.0,
+        },
+        {
+            "case_id": "3",
+            "split": "test",
+            "inference_elapsed_ms": 14.0,
+            "processing_elapsed_ms": 50.0,
+        },
+    ]
+
+    summary = _processing_timing_summary(rows, warmup_performed=True)
+
+    assert summary["mean_inference_elapsed_ms"] == 12.0
+    assert summary["mean_processing_elapsed_ms"] == 40.0
+    assert summary["processing_elapsed_ms_standard_error"] == 10.0
+    assert summary["warmup_policy"].startswith("one_untimed")
+    assert summary["by_split"]["validation"]["mean_processing_elapsed_ms"] == 30.0
+    assert summary["by_split"]["test"]["mean_processing_elapsed_ms"] == 50.0
+
+
 def test_paper_metric_case_uses_endpoint_aligned_native_fov(monkeypatch):
     monkeypatch.setattr(eval_npz, "_PAPER_METRIC_SHAPE_ZYX", (9, 9, 9))
     volume = np.zeros((9, 9, 9), dtype=np.uint8)
@@ -240,6 +267,9 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
 
         def __iter__(self):
             return iter(self.samples)
+
+        def __getitem__(self, index):
+            return self.samples[index]
 
     protocol = {
         "expected_view_count": 2,
@@ -341,6 +371,13 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
     assert dataset_kwargs["expected_imager_pixel_spacing_mm"] == 0.55
     assert dataset_kwargs["fallback_imager_pixel_spacing_mm"] == 0.55
     assert dataset_kwargs["fallback_sid_mm"] == 900.0
+    assert summary["timing"]["mean_inference_elapsed_ms"] == 12.5
+    assert summary["timing"]["mean_processing_elapsed_ms"] > 0.0
     assert summary["roles"]["final"]["masked_dice_3d"] == 1.0
     assert (output_dir / "metrics" / "flat_per_case_metrics.csv").is_file()
+    assert (output_dir / "timings" / "processing" / "per_case.csv").is_file()
+    timing_summary = json.loads(
+        (output_dir / "timings" / "processing" / "summary.json").read_text()
+    )
+    assert timing_summary["mean_processing_elapsed_ms"] > 0.0
     assert (output_dir / "evaluation_record.json").is_file()

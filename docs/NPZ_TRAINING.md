@@ -625,6 +625,18 @@ training: a 900 mm SID, with 0.65 mm detector spacing for LCA and 0.55 mm for
 RCA. Values present in projection NPZ files still take precedence and are
 validated against the expected artery spacing.
 
+Paper-metric evaluation records two timings for every case. The synchronized
+`inference_elapsed_ms` measures only the model forward pass, while
+`processing_elapsed_ms` starts before the case is loaded and ends after the
+prediction NPZ, physical metrics, and paper-mask artifact are written. It
+excludes visualization and cross-case aggregation. Per-case values are saved
+to `timings/processing/per_case.csv`; combined and validation/test-specific
+means and standard errors are written to `timings/processing/summary.json` and
+embedded in `performance_summary.json`, `metrics/paper_metric_summary.json`,
+and the paired LCA/RCA launcher summary. As in the parametric evaluator, one
+model forward on the first selected case is performed as an untimed warmup
+before all reported case timings.
+
 For a visual check of one validation/test case, select the artery and physical
 case number:
 

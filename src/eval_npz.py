@@ -1136,6 +1136,7 @@ def _metric_values(report: Mapping[str, Any]) -> dict[str, float | int | None]:
         "view_labels",
         "pair_angle_deg",
         "inference_elapsed_ms",
+        "processing_elapsed_ms",
     }
     return {
         key: value
@@ -1160,6 +1161,55 @@ def _mean_standard_error(values: Sequence[float]) -> tuple[float, float | None]:
         else None
     )
     return mean, error
+
+
+def _processing_timing_summary(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    warmup_performed: bool = False,
+) -> dict[str, Any]:
+    """Summarize synchronized inference and end-to-end case processing times."""
+
+    def summarize(selected: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        inference_mean, inference_se = _mean_standard_error(
+            [float(row["inference_elapsed_ms"]) for row in selected]
+        )
+        processing_mean, processing_se = _mean_standard_error(
+            [float(row["processing_elapsed_ms"]) for row in selected]
+        )
+        return {
+            "num_cases": len(selected),
+            "mean_inference_elapsed_ms": inference_mean,
+            "inference_elapsed_ms_standard_error": inference_se,
+            "mean_processing_elapsed_ms": processing_mean,
+            "processing_elapsed_ms_standard_error": processing_se,
+        }
+
+    summary = summarize(rows)
+    summary.update(
+        {
+            "inference_scope": "model_forward_only_with_device_synchronization",
+            "processing_scope": (
+                "dataset_item_load_through_prediction_npz_write_and_case_metric_"
+                "artifact_generation; excludes_visualization_and_cross_case_"
+                "aggregation"
+            ),
+            "warmup_policy": (
+                "one_untimed_model_forward_on_first_selected_case_before_all_"
+                "case_timings"
+                if warmup_performed
+                else "none"
+            ),
+            "per_case_file": "timings/processing/per_case.csv",
+            "by_split": {
+                split: summarize(
+                    [row for row in rows if str(row["split"]) == split]
+                )
+                for split in dict.fromkeys(str(row["split"]) for row in rows)
+            },
+        }
+    )
+    return summary
 
 
 def _paper_metric_summary(
@@ -1380,8 +1430,21 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
     paper_metric_records: list[dict[str, Any]] = []
     prediction_records: list[dict[str, Any]] = []
     timing_rows: list[dict[str, Any]] = []
+    warmup_performed = options.evaluation_mode == "paper_metric"
     with torch.inference_mode():
-        for index, sample in enumerate(dataset):
+        if warmup_performed:
+            print("Running one untimed model warmup on the first selected case")
+            warmup_sample = dataset[0]
+            _forward_dense(
+                model,
+                warmup_sample,
+                device=device,
+                use_mixed_precision=use_mixed_precision,
+            )
+            del warmup_sample
+        for index in range(len(dataset)):
+            processing_started = time.perf_counter()
+            sample = dataset[index]
             case_id = str(sample["case_id"])
             dataset_split = options.case_splits[case_id]
             print(
@@ -1427,6 +1490,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 "inference_elapsed_ms": elapsed_ms,
                 **metrics,
             }
+            paper_record: dict[str, Any] | None = None
             if options.evaluation_mode == "paper_metric":
                 paper_result = _paper_metric_case(
                     dense,
@@ -1468,6 +1532,17 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 }
                 paper_metric_records.append(paper_record)
                 report.update(paper_result["metrics"])
+            processing_elapsed_ms = (
+                time.perf_counter() - processing_started
+            ) * 1000.0
+            report["processing_elapsed_ms"] = processing_elapsed_ms
+            if paper_record is not None:
+                paper_record.update(
+                    {
+                        "inference_elapsed_ms": elapsed_ms,
+                        "processing_elapsed_ms": processing_elapsed_ms,
+                    }
+                )
             if index < options.max_visualizations:
                 visualization_path = (
                     output_dir / "visualization" / case_id / dataset_split / "final"
@@ -1501,9 +1576,14 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                     "case_id": case_id,
                     "split": dataset_split,
                     "inference_elapsed_ms": elapsed_ms,
+                    "processing_elapsed_ms": processing_elapsed_ms,
                 }
             )
 
+    timing_summary = _processing_timing_summary(
+        timing_rows,
+        warmup_performed=warmup_performed,
+    )
     combined = _aggregate_metrics(reports)
     combined["split_counts"] = {
         split_name: sum(report["split"] == split_name for report in reports)
@@ -1535,11 +1615,18 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 str(record["split"]) for record in paper_metric_records
             )
         }
+        paper_summary["timing"] = timing_summary
+        for split_name, split_summary in paper_summary["by_split"].items():
+            split_summary["timing"] = timing_summary["by_split"][split_name]
     performance_cases = [
         {
             "case_id": report["case_id"],
             "split": report["split"],
             "eval_num_views": report["eval_num_views"],
+            "timing": {
+                "inference_elapsed_ms": report["inference_elapsed_ms"],
+                "processing_elapsed_ms": report["processing_elapsed_ms"],
+            },
             "final": _metric_values(report),
         }
         for report in reports
@@ -1560,6 +1647,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             "metrics_by_split": metrics_by_split,
             "paper_metric": paper_summary,
         },
+        "timing": timing_summary,
         "roles": {"final": role_summary},
         "per_case_metrics_file": "performance_per_case.json",
     }
@@ -1577,17 +1665,38 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         },
     )
 
-    timing_values = [row["inference_elapsed_ms"] for row in timing_rows]
-    timing_mean, timing_se = _mean_standard_error(timing_values)
-    _write_csv(output_dir / "timings" / "inference" / "per_case.csv", timing_rows)
+    inference_rows = [
+        {
+            "case_id": row["case_id"],
+            "split": row["split"],
+            "inference_elapsed_ms": row["inference_elapsed_ms"],
+        }
+        for row in timing_rows
+    ]
+    _write_csv(
+        output_dir / "timings" / "inference" / "per_case.csv",
+        inference_rows,
+    )
     _write_json(
         output_dir / "timings" / "inference" / "summary.json",
         {
-            "num_cases": len(timing_rows),
-            "mean_inference_elapsed_ms": timing_mean,
-            "inference_elapsed_ms_standard_error": timing_se,
+            "num_cases": timing_summary["num_cases"],
+            "mean_inference_elapsed_ms": timing_summary[
+                "mean_inference_elapsed_ms"
+            ],
+            "inference_elapsed_ms_standard_error": timing_summary[
+                "inference_elapsed_ms_standard_error"
+            ],
             "scope": "model_forward_only_with_device_synchronization",
         },
+    )
+    _write_csv(
+        output_dir / "timings" / "processing" / "per_case.csv",
+        timing_rows,
+    )
+    _write_json(
+        output_dir / "timings" / "processing" / "summary.json",
+        timing_summary,
     )
 
     if options.evaluation_mode in {"metric", "paper_metric"}:
@@ -1601,6 +1710,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 "num_cases": len(reports),
                 "roles": {"final": role_summary},
                 "evaluation": performance_summary["evaluation"],
+                "timing": timing_summary,
             },
         )
         _save_metric_histogram(reports, metrics_dir / "comparison_histogram.png")
@@ -1673,6 +1783,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         "sparse_backend": model.sparse_backend,
         "projection_protocol": protocol,
         "paper_metric": paper_summary,
+        "timing": timing_summary,
         "prediction_npz_export": {
             "enabled": True,
             "roles": ["final"],
@@ -1684,6 +1795,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         "output_layout": {
             "predictions": "predictions/final/{validation,test}/<case_id>.npz",
             "timings": "timings/inference",
+            "processing_timings": "timings/processing",
             "visualization": (
                 "visualization/<case_id>/<split>/final" if options.max_visualizations else None
             ),

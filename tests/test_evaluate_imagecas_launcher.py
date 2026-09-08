@@ -166,7 +166,19 @@ def test_combined_summary_keeps_arteries_separate(tmp_path):
             json.dumps({"macro_dice_3d": dice}), encoding="utf-8"
         )
         (output_dir / "performance_summary.json").write_text(
-            json.dumps({"evaluation": {}}), encoding="utf-8"
+            json.dumps(
+                {
+                    "evaluation": {},
+                    "timing": {"mean_processing_elapsed_ms": 25.0},
+                }
+            ),
+            encoding="utf-8",
+        )
+        timing_dir = output_dir / "timings" / "processing"
+        timing_dir.mkdir(parents=True)
+        (timing_dir / "summary.json").write_text(
+            json.dumps({"mean_processing_elapsed_ms": 25.0}),
+            encoding="utf-8",
         )
         checkpoint = tmp_path / f"{artery}.ckpt"
         checkpoint.touch()
@@ -186,4 +198,7 @@ def test_combined_summary_keeps_arteries_separate(tmp_path):
 
     assert summary["arteries"]["lca"]["paper_metric"]["macro_dice_3d"] == 0.8
     assert summary["arteries"]["rca"]["paper_metric"]["macro_dice_3d"] == 0.6
+    assert summary["arteries"]["lca"]["timing"][
+        "mean_processing_elapsed_ms"
+    ] == 25.0
     assert "pooled" in summary["aggregation_policy"]
