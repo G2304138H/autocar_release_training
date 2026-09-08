@@ -95,6 +95,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--log-dir", type=Path)
     parser.add_argument(
+        "--numerical-debug",
+        action="store_true",
+        help=(
+            "Check every gradient and model tensor for NaN/Inf, retain the "
+            "contributing case/view context, and abort before an unsafe "
+            "optimizer update. This is intentionally slower than normal training."
+        ),
+    )
+    parser.add_argument(
         "--preflight-only",
         action="store_true",
         help="Validate paths, splits, pairing, geometry metadata, and sample loading.",
@@ -253,6 +262,8 @@ def _hydra_command(
         command.append(f"ckpt_path={args.checkpoint}")
     if args.log_dir is not None:
         command.append(f"paths.log_dir={args.log_dir}")
+    if args.numerical_debug:
+        command.append("model.numerical_debug=true")
     extra = list(args.overrides)
     if extra and extra[0] == "--":
         extra = extra[1:]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 import numpy as np
 import torch
@@ -36,12 +36,16 @@ class AutoCARVoxelLit(LightningModule):
         ssim_window_size: int = 7,
         ssim_chunk_depth: int = 8,
         ssim_every_n_epochs: int = 10,
+        numerical_debug: bool = False,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(logger=False)
         self.recon_net = AutoCAR(recon_net)
         self.criterion_bce = torch.nn.BCEWithLogitsLoss()
         self.criterion_dice = DiceLossLogit()
+        self._numerical_debug_context: tuple[str, int, str] | None = None
+        self._numerical_debug_accumulation_cases: list[str] = []
+        self._numerical_debug_last_optimizer_cases: tuple[str, ...] = ()
         if not 0.0 <= float(prediction_threshold) <= 1.0:
             raise ValueError("prediction_threshold must lie in [0,1].")
         if not all(
@@ -81,13 +85,19 @@ class AutoCARVoxelLit(LightningModule):
             datamodule.set_train_epoch(self.current_epoch)
 
     def _forward_batch(self, batch: Dict[str, Any]):
+        if bool(self.hparams.numerical_debug):
+            self._assert_finite_model_state("before forward")
         masks = batch["images"].to(dtype=torch.float32)
         if masks.ndim != 5 or masks.shape[2] != 1:
             raise ValueError(
                 f"Expected images [B,V,1,H,W], got {tuple(masks.shape)}."
             )
         matrices = batch["world2pix4x4"].to(dtype=torch.float32)
-        return self.recon_net(masks[:, :, 0], matrices)
+        output = self.recon_net(masks[:, :, 0], matrices)
+        if bool(self.hparams.numerical_debug):
+            # BatchNorm buffers can change during a training forward pass.
+            self._assert_finite_model_state("after forward")
+        return output
 
     def _sample_voxel_targets(
         self, prediction, batch: Dict[str, Any]
@@ -122,8 +132,14 @@ class AutoCARVoxelLit(LightningModule):
                 "check camera geometry, masks, and support_views."
             )
         if not torch.isfinite(logits).all():
+            statistics = (
+                f" ({self._tensor_statistics(logits)})"
+                if bool(self.hparams.numerical_debug)
+                else ""
+            )
             raise FloatingPointError(
-                "The reconstruction network produced non-finite sparse logits."
+                "The reconstruction network produced non-finite sparse logits"
+                f"{statistics}."
             )
         targets, valid_targets = self._sample_voxel_targets(prediction, batch)
         if not torch.any(valid_targets):
@@ -157,7 +173,7 @@ class AutoCARVoxelLit(LightningModule):
 
     @staticmethod
     def _batch_identity(batch: Dict[str, Any]) -> str:
-        """Format case and source paths for progress and failure messages."""
+        """Format source identity and selected-view metadata for diagnostics."""
 
         def values(key: str) -> tuple[str, ...]:
             raw = batch.get(key, "<missing>")
@@ -175,11 +191,169 @@ class AutoCARVoxelLit(LightningModule):
 
         case_ids = values("case_id")
         projection_paths = values("projection_path")
-        return (
+        identity = (
             f"case_id={case_ids[0]!r}, projection_path={projection_paths[0]!r}"
             if len(case_ids) == len(projection_paths) == 1
             else f"case_ids={case_ids!r}, projection_paths={projection_paths!r}"
         )
+        metadata = []
+        for key in (
+            "view_indices",
+            "source_view_indices",
+            "view_labels",
+            "pair_angle_deg",
+        ):
+            if key not in batch:
+                continue
+            raw = batch[key]
+            if isinstance(raw, torch.Tensor):
+                raw = raw.detach().cpu().tolist()
+            elif isinstance(raw, np.ndarray):
+                raw = raw.tolist()
+            metadata.append(f"{key}={raw!r}")
+        return identity + (", " + ", ".join(metadata) if metadata else "")
+
+    @staticmethod
+    def _tensor_values(tensor: torch.Tensor) -> torch.Tensor:
+        detached = tensor.detach()
+        return detached.coalesce().values() if detached.is_sparse else detached
+
+    @classmethod
+    def _tensor_statistics(cls, tensor: torch.Tensor) -> str:
+        """Return bounded statistics without copying a healthy model tensor."""
+
+        values = cls._tensor_values(tensor)
+        finite = torch.isfinite(values)
+        total_count = values.numel()
+        finite_count = int(finite.sum().item())
+        if values.is_floating_point() or values.is_complex():
+            nan_count = int(torch.isnan(values).sum().item())
+            posinf_count = int(torch.isposinf(values).sum().item())
+            neginf_count = int(torch.isneginf(values).sum().item())
+        else:
+            nan_count = posinf_count = neginf_count = 0
+        summary = (
+            f"shape={tuple(values.shape)}, dtype={values.dtype}, "
+            f"finite={finite_count}/{total_count}, nan={nan_count}, "
+            f"+inf={posinf_count}, -inf={neginf_count}"
+        )
+        if finite_count:
+            finite_values = values[finite]
+            if finite_values.is_complex():
+                finite_values = finite_values.abs()
+            finite_values = finite_values.to(dtype=torch.float64)
+            summary += (
+                f", finite_min={finite_values.min().item():.6g}, "
+                f"finite_max={finite_values.max().item():.6g}, "
+                f"finite_mean={finite_values.mean().item():.6g}"
+            )
+        return summary
+
+    @classmethod
+    def _nonfinite_tensors(
+        cls,
+        tensors: Iterable[tuple[str, torch.Tensor]],
+        *,
+        limit: int = 5,
+    ) -> list[str]:
+        if limit <= 0:
+            return []
+        grouped: dict[
+            torch.device, list[tuple[str, torch.Tensor, torch.Tensor]]
+        ] = {}
+        for name, tensor in tensors:
+            values = cls._tensor_values(tensor)
+            grouped.setdefault(values.device, []).append(
+                (name, tensor, torch.isfinite(values).all())
+            )
+
+        failures = []
+        # Resolve all checks on a device in one synchronization rather than
+        # synchronizing once for every layer in this intentionally thorough mode.
+        for entries in grouped.values():
+            finite_by_tensor = torch.stack([entry[2] for entry in entries])
+            failed_indices = (
+                (~finite_by_tensor).nonzero(as_tuple=False).flatten().cpu().tolist()
+            )
+            for index in failed_indices:
+                name, tensor, _ = entries[index]
+                failures.append(f"{name}: {cls._tensor_statistics(tensor)}")
+                if len(failures) == limit:
+                    return failures
+        return failures
+
+    def _set_numerical_debug_context(
+        self,
+        phase: str,
+        batch: Dict[str, Any],
+        batch_idx: int,
+    ) -> None:
+        if bool(self.hparams.numerical_debug):
+            self._numerical_debug_context = (
+                phase,
+                batch_idx,
+                self._batch_identity(batch),
+            )
+
+    def _numerical_debug_location(self) -> str:
+        context = self._numerical_debug_context
+        if context is None:
+            return f"epoch={self.current_epoch + 1}, batch=<unknown>"
+        phase, batch_idx, identity = context
+        return (
+            f"phase={phase}, epoch={self.current_epoch + 1}, "
+            f"batch={batch_idx + 1}, {identity}"
+        )
+
+    def _last_optimizer_context(self) -> str:
+        if not self._numerical_debug_last_optimizer_cases:
+            return "no preceding optimizer-step cases were recorded"
+        return (
+            "preceding optimizer-step cases=["
+            + "; ".join(self._numerical_debug_last_optimizer_cases)
+            + "]"
+        )
+
+    def _assert_finite_model_state(self, when: str) -> None:
+        failures = self._nonfinite_tensors(
+            (
+                (f"parameter:{name}", parameter)
+                for name, parameter in self.named_parameters()
+            )
+        )
+        failures.extend(
+            self._nonfinite_tensors(
+                ((f"buffer:{name}", buffer) for name, buffer in self.named_buffers()),
+                limit=max(0, 5 - len(failures)),
+            )
+        )
+        if failures:
+            raise FloatingPointError(
+                f"Numerical troubleshooting found non-finite model state {when}; "
+                f"{self._numerical_debug_location()}; "
+                f"{self._last_optimizer_context()}; affected tensors: "
+                + " | ".join(failures)
+            )
+
+    def _assert_finite_gradients(self, when: str) -> None:
+        failures = self._nonfinite_tensors(
+            (
+                (f"gradient:{name}", parameter.grad)
+                for name, parameter in self.named_parameters()
+                if parameter.grad is not None
+            )
+        )
+        if failures:
+            accumulated = tuple(self._numerical_debug_accumulation_cases)
+            raise FloatingPointError(
+                f"Numerical troubleshooting found non-finite gradients {when}, "
+                "before the optimizer could update model weights; "
+                f"{self._numerical_debug_location()}; "
+                "accumulated cases=["
+                + "; ".join(accumulated)
+                + "]; affected tensors: "
+                + " | ".join(failures)
+            )
 
     def _raise_step_failure(
         self,
@@ -196,6 +370,7 @@ class AutoCARVoxelLit(LightningModule):
         ) from error
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
+        self._set_numerical_debug_context("training", batch, batch_idx)
         try:
             return self._training_step(batch, batch_idx)
         except Exception as error:
@@ -223,7 +398,28 @@ class AutoCARVoxelLit(LightningModule):
             on_step=True,
             sync_dist=False,
         )
+        if bool(self.hparams.numerical_debug):
+            self._numerical_debug_accumulation_cases.append(
+                self._batch_identity(batch)
+            )
         return loss
+
+    def on_after_backward(self) -> None:
+        """Stop at the first case that introduces a non-finite gradient."""
+
+        if bool(self.hparams.numerical_debug):
+            self._assert_finite_gradients("after backward")
+
+    def on_before_optimizer_step(self, optimizer) -> None:
+        """Make the final finite check before Adam mutates parameters/state."""
+
+        if not bool(self.hparams.numerical_debug):
+            return
+        self._assert_finite_gradients("at optimizer-step boundary")
+        self._numerical_debug_last_optimizer_cases = tuple(
+            self._numerical_debug_accumulation_cases
+        )
+        self._numerical_debug_accumulation_cases.clear()
 
     def _log_sparse_diagnostics(
         self,
@@ -389,6 +585,7 @@ class AutoCARVoxelLit(LightningModule):
         phase = "validation"
         if getattr(self.trainer, "sanity_checking", False):
             phase = "validation sanity check"
+        self._set_numerical_debug_context(phase, batch, batch_idx)
         self.print(
             f"[AutoCAR] {phase}: epoch={self.current_epoch + 1}, "
             f"batch={batch_idx + 1}, {self._batch_identity(batch)}",
@@ -400,6 +597,7 @@ class AutoCARVoxelLit(LightningModule):
             self._raise_step_failure(phase, batch, batch_idx, error)
 
     def test_step(self, batch: Dict[str, Any], batch_idx: int) -> None:
+        self._set_numerical_debug_context("test", batch, batch_idx)
         self.print(
             f"[AutoCAR] test: epoch={self.current_epoch + 1}, "
             f"batch={batch_idx + 1}, {self._batch_identity(batch)}",

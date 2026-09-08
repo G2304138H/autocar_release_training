@@ -55,3 +55,7 @@ dice_weight: 1.0
 ssim_window_size: 7
 ssim_chunk_depth: 8
 ssim_every_n_epochs: 10
+
+# Opt-in, synchronization-heavy checks for locating the first non-finite
+# gradient or model tensor before it can silently contaminate later batches.
+numerical_debug: false

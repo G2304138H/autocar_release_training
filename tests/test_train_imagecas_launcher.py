@@ -51,3 +51,13 @@ def test_launcher_builds_rca_debug_command_without_a_shell():
     assert "trainer.max_epochs=3" in command
     assert "debug=stage2_gpu" in command
     assert "--" not in command
+
+
+def test_launcher_enables_numerical_troubleshooting_mode():
+    args = launcher._parser().parse_args(
+        ["--artery", "lca", "--skip-preflight", "--numerical-debug"]
+    )
+    settings = launcher._resolved_settings(args)
+    command = launcher._hydra_command(args, settings)
+
+    assert "model.numerical_debug=true" in command

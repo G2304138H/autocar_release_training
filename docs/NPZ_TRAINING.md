@@ -433,6 +433,25 @@ Then launch the independent full training runs:
 /export/home2/reny0012/vir_env/bin/python scripts/train_imagecas_npz.py --artery rca --max-epochs 200
 ```
 
+For a run that has produced non-finite logits, enable the opt-in numerical
+troubleshooting mode:
+
+```bash
+source /export/home2/reny0012/vir_env/autocar/bin/activate
+cd /export/home2/reny0012/code/autocar_release_training
+python scripts/train_imagecas_npz.py --artery lca --max-epochs 200 --numerical-debug
+# Substitute --artery rca for the RCA run.
+```
+
+This mode checks gradients after every backward pass and checks model
+parameters and buffers before and after every forward pass, so it is slower
+than ordinary training. A failure includes the case, projection path, selected
+and source view indices, labels when available, pair angle, affected tensor
+statistics, and the cases accumulated for the optimizer step. Non-finite
+gradients abort before Adam can update the model. If Adam instead produces
+non-finite model state from finite inputs, the next pre-forward check reports
+the preceding optimizer step's contributing cases.
+
 The experiments use separate task names (`train_autocar_lca` and
 `train_autocar_rca`), so checkpoints and TensorBoard logs do not collide.
 Resume with `--checkpoint /absolute/path/to/last.ckpt`. Start with
