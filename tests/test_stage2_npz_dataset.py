@@ -98,6 +98,8 @@ class Stage2NPZDatasetTests(unittest.TestCase):
             self.assertEqual(sample["case_id"], "42")
             self.assertEqual(sample["sample_name"], "lca_42")
             self.assertEqual(sample["images"].shape, (2, 1, 8, 8))
+            self.assertEqual(int(sample["image_dim"]), 8)
+            self.assertEqual(sample["image_dim_source"], "npz")
             np.testing.assert_array_equal(sample["view_indices"], [2, 0])
             np.testing.assert_array_equal(sample["source_view_indices"], [12, 10])
             self.assertEqual(sample["gt_volume_zyx"].shape, (6, 5, 4))
@@ -221,6 +223,24 @@ class Stage2NPZDatasetTests(unittest.TestCase):
             )
             self.assertEqual(sample["sid_source"], "npz")
             self.assertEqual(sample["imager_pixel_spacing_source"], "npz")
+
+    def test_legacy_projection_derives_image_dim_from_square_images(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection_path = root / "rca_0042.npz"
+            voxel_path = root / "42.npz"
+            _write_projection(projection_path, case_id="42", image_dim=8)
+            _drop_projection_fields(projection_path, "image_dim")
+            _write_voxel(voxel_path)
+
+            sample = Stage2NPZDataset(
+                projection_path,
+                voxel_path,
+                case_id_mode="imagecas_numeric",
+            )[0]
+
+            self.assertEqual(int(sample["image_dim"]), 8)
+            self.assertEqual(sample["image_dim_source"], "images")
 
     def test_legacy_geometry_fields_without_fallback_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

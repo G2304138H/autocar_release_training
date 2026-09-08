@@ -583,6 +583,7 @@ class Stage2NPZDataset:
                 else self.gt_origin_xyz_mm.copy()
             ).astype(np.float32, copy=False),
             "image_dim": np.int64(geometry.image_dim),
+            "image_dim_source": projection["image_dim_source"],
             "sid_mm": np.float32(geometry.sid_mm),
             "sid_source": projection["sid_source"],
             "source_to_isocenter_mm": np.float32(
@@ -656,21 +657,28 @@ class Stage2NPZDataset:
                 phi = _finite_numeric_array(
                     data, "phi_deg", path, (num_views,)
                 ).astype(np.float32)
-                raw_image_dim = _scalar(data, "image_dim", path)
-                if (
-                    isinstance(raw_image_dim, (bool, np.bool_))
-                    or not np.isfinite(raw_image_dim)
-                    or int(raw_image_dim) != raw_image_dim
-                ):
-                    raise Stage2NPZError(
-                        f"image_dim in {path} must be a finite integer."
-                    )
-                image_dim = int(raw_image_dim)
-                if image_dim != height:
-                    raise Stage2NPZError(
-                        f"image_dim={image_dim} in {path} does not match images "
-                        f"with shape {images.shape}."
-                    )
+                if "image_dim" in data:
+                    raw_image_dim = _scalar(data, "image_dim", path)
+                    if (
+                        isinstance(raw_image_dim, (bool, np.bool_))
+                        or not np.isfinite(raw_image_dim)
+                        or int(raw_image_dim) != raw_image_dim
+                    ):
+                        raise Stage2NPZError(
+                            f"image_dim in {path} must be a finite integer."
+                        )
+                    image_dim = int(raw_image_dim)
+                    image_dim_source = "npz"
+                    if image_dim != height:
+                        raise Stage2NPZError(
+                            f"image_dim={image_dim} in {path} does not match images "
+                            f"with shape {images.shape}."
+                        )
+                else:
+                    # Legacy projection files omit this redundant scalar. The
+                    # square [V,H,W] image contract makes H unambiguous.
+                    image_dim = height
+                    image_dim_source = "images"
 
                 if "sid" in data:
                     sid = float(_scalar(data, "sid", path))
@@ -786,6 +794,7 @@ class Stage2NPZDataset:
                     "images": np.ascontiguousarray(images, dtype=np.float32),
                     "sample_name": _optional_text(data, "sample_name")
                     or path.stem,
+                    "image_dim_source": image_dim_source,
                     "projection_center_offset_xyz_mm": np.ascontiguousarray(
                         center_offset_mm, dtype=np.float32
                     ),

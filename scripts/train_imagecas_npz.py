@@ -200,6 +200,8 @@ def _preflight(settings: dict[str, object]) -> None:
         print(
             f"{split_name}: case={case_id}, images={sample['images'].shape}, "
             f"GT={sample['gt_volume_zyx'].shape}, "
+            f"image_dim={int(sample['image_dim'])} "
+            f"({sample['image_dim_source']}), "
             f"pixel_spacing={float(sample['imager_pixel_spacing_mm']):g} mm "
             f"({sample['imager_pixel_spacing_source']}), "
             f"SID={float(sample['sid_mm']):g} mm ({sample['sid_source']}), "

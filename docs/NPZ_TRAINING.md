@@ -138,9 +138,9 @@ The cluster-specific inputs are configured in
 `configs/data/stage2_npz_rca.yaml`. The loader reads detector spacing from each
 projection NPZ and checks it against the declared artery-level invariant:
 0.65 mm for LCA and 0.55 mm for RCA. Per-case metadata takes precedence when
-present. For legacy RCA files only, the configuration supplies the known
-0.55 mm spacing and 900 mm SID when those keys are absent; every sample records
-whether each value came from the NPZ or configuration.
+present. For legacy files, the artery configuration supplies the known spacing
+and 900 mm SID when those keys are absent; every sample records whether each
+value came from the NPZ or configuration.
 
 ### Projection NPZ contract
 
@@ -151,7 +151,7 @@ Required fields:
 | `case_id` | Scalar case identifier used to find the GT NPZ |
 | `images` | Binary/soft projection masks with shape `[V,H,W]` |
 | `theta_deg`, `phi_deg` | One camera angle pair per view |
-| `image_dim` | Detector image size in pixels |
+| `image_dim` | Detector image size in pixels; when absent, derived from the validated square `[V,H,W]` images |
 | `sid` | Source-to-detector distance in metres; may be omitted only when `fallback_sid_mm` is configured |
 | `imager_pixel_spacing` | Detector pixel spacing in millimetres; may be omitted only when `fallback_imager_pixel_spacing_mm` is configured |
 | `projection_center_offset` | XYZ reconstruction centre in source units |
