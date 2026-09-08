@@ -7,7 +7,9 @@ baseline while keeping AutoCAR's existing Stage-2 volume and metric contracts:
 * every selected case is reconstructed from its input views;
 * the dense probability volume is saved as a self-describing compressed NPZ;
 * paper-metric mode writes per-case CSV/JSON and aggregate summaries; and
-* visualisation mode additionally writes an input-view/volume monitor bundle.
+* visualisation mode additionally writes an input-view/volume monitor bundle;
+* inaccurate-view mode sweeps fixed signed camera-angle errors while keeping
+  the two source projection images unchanged.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from src.dataset.case_ids import normalize_case_id
 from src.dataset.case_splits import load_case_splits
 from src.dataset.stage2_npz import Stage2NPZDataset
 from src.evaluate_npz import evaluate_case
+from src.geometry.projection_geometry import ProjectionGeometry
 from src.geometry.voxel_grid import VoxelGrid, resample_binary_volume_nearest
 from src.metrics import compute_volume_metrics, masked_ssim_3d
 from src.modules.autocar_voxel_pl import AutoCARVoxelLit
@@ -67,6 +70,8 @@ class EvaluationOptions:
     fallback_sid_mm: float | None
     view_indices: tuple[int, int]
     view_labels: tuple[str, str] | None
+    view_direction_options: Mapping[str, Any]
+    compute_paper_metrics: bool
     device: str
     precision: str
     output_dtype: str
@@ -194,6 +199,63 @@ def _eval_split(raw: Any) -> str:
     if value not in _EVALUATION_SPLITS:
         raise ValueError("eval_split must be 'val', 'test', or 'val_test'.")
     return value
+
+
+def resolve_evaluation_view_directions(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate fixed evaluation-only camera-angle perturbations."""
+
+    raw = config.get("evaluation_view_directions", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("evaluation_view_directions must be a JSON object.")
+    legacy_keys = {
+        "max_theta_change_deg",
+        "max_phi_change_deg",
+        "seed",
+    }.intersection(raw)
+    if legacy_keys:
+        raise ValueError(
+            "Random maximum-bounded view-direction changes are not supported; "
+            "use fixed theta_change_deg and phi_change_deg values."
+        )
+    options = dict(raw)
+    options.setdefault("accurate", True)
+    options.setdefault("theta_change_deg", 0.0)
+    options.setdefault("phi_change_deg", 0.0)
+    if not isinstance(options["accurate"], bool):
+        raise ValueError("evaluation_view_directions.accurate must be boolean.")
+    for key in ("theta_change_deg", "phi_change_deg"):
+        raw_value = options[key]
+        if isinstance(raw_value, bool):
+            raise ValueError(
+                f"evaluation_view_directions.{key} must be a finite number."
+            )
+        value = float(raw_value)
+        if not math.isfinite(value):
+            raise ValueError(
+                f"evaluation_view_directions.{key} must be a finite number."
+            )
+        options[key] = value
+    has_change = bool(
+        options["theta_change_deg"] != 0.0
+        or options["phi_change_deg"] != 0.0
+    )
+    if options["accurate"] and has_change:
+        raise ValueError(
+            "Accurate evaluation view directions require theta_change_deg=0 "
+            "and phi_change_deg=0."
+        )
+    if not options["accurate"] and not has_change:
+        raise ValueError(
+            "Inaccurate evaluation view directions require a non-zero fixed "
+            "theta_change_deg or phi_change_deg."
+        )
+    options["distribution"] = "fixed_per_view"
+    options["model_interface"] = "world2pix4x4"
+    return options
 
 
 def _case_limit(raw: Any) -> int | None:
@@ -511,6 +573,32 @@ def resolve_evaluation_options(
         raise ValueError(
             "save_prediction_npz_files must be true for the AutoCAR evaluation runner."
         )
+    view_direction_options = resolve_evaluation_view_directions(config)
+    robustness_condition = config.get(
+        "view_direction_robustness_condition", False
+    )
+    if not isinstance(robustness_condition, bool):
+        raise ValueError("view_direction_robustness_condition must be boolean.")
+    record_robustness_paper_metrics = config.get(
+        "record_inaccurate_view_direction_paper_metrics", False
+    )
+    if not isinstance(record_robustness_paper_metrics, bool):
+        raise ValueError(
+            "record_inaccurate_view_direction_paper_metrics must be boolean."
+        )
+    if record_robustness_paper_metrics and not robustness_condition:
+        raise ValueError(
+            "record_inaccurate_view_direction_paper_metrics=true is reserved "
+            "for child runs created by evaluation_mode='inaccurate_view_direction'."
+        )
+    if robustness_condition and view_direction_options["accurate"]:
+        raise ValueError(
+            "A view-direction robustness child condition must use inaccurate "
+            "evaluation_view_directions."
+        )
+    compute_paper_metrics = bool(
+        mode == "paper_metric" or record_robustness_paper_metrics
+    )
     paper_metric_save_masks = config.get("paper_metric_save_masks", True)
     if not isinstance(paper_metric_save_masks, bool):
         raise ValueError("paper_metric_save_masks must be boolean.")
@@ -558,12 +646,14 @@ def resolve_evaluation_options(
             "fallback_sid_mm": fallback_sid,
             "evaluation_view_indices": list(view_indices),
             "evaluation_view_labels": None if view_labels is None else list(view_labels),
+            "evaluation_view_directions": view_direction_options,
             "eval_num_views": len(view_indices),
             "eval_view_selection": "fixed",
             "save_prediction_npz_files": True,
             "max_visualizations_effective": max_visualizations,
             "prediction_threshold": threshold,
             "paper_metric_save_masks": paper_metric_save_masks,
+            "compute_paper_metrics": compute_paper_metrics,
             "ssim_window_size": window_size,
             "ssim_chunk_depth": chunk_depth,
         }
@@ -589,6 +679,8 @@ def resolve_evaluation_options(
         fallback_sid_mm=fallback_sid,
         view_indices=(view_indices[0], view_indices[1]),
         view_labels=view_labels,
+        view_direction_options=view_direction_options,
+        compute_paper_metrics=compute_paper_metrics,
         device=str(config.get("device", "auto")),
         precision=precision,
         output_dtype=output_dtype,
@@ -660,6 +752,164 @@ def _numpy(value: Any) -> np.ndarray:
     if isinstance(value, torch.Tensor):
         return value.detach().cpu().numpy()
     return np.asarray(value)
+
+
+def _array_like(reference: Any, value: np.ndarray) -> Any:
+    """Return ``value`` using the tensor/array representation of ``reference``."""
+
+    if isinstance(reference, torch.Tensor):
+        return torch.as_tensor(
+            value,
+            dtype=reference.dtype,
+            device=reference.device,
+        )
+    reference_array = np.asarray(reference)
+    return np.ascontiguousarray(value, dtype=reference_array.dtype)
+
+
+def _wrapped_degrees(values: np.ndarray) -> np.ndarray:
+    wrapped = (np.asarray(values, dtype=np.float64) + 180.0) % 360.0 - 180.0
+    return wrapped.astype(np.float32)
+
+
+def evaluation_model_camera_sample(
+    sample: Mapping[str, Any],
+    options: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, float | int]]]:
+    """Return one sample with evaluation-only model camera matrices.
+
+    The projection images and source metadata are retained.  For an inaccurate
+    condition, the model-facing camera geometry is regenerated after adding the
+    same fixed signed theta/phi changes to both selected views.
+    """
+
+    original_theta = np.asarray(_numpy(sample["theta_deg"]), dtype=np.float64)
+    original_phi = np.asarray(_numpy(sample["phi_deg"]), dtype=np.float64)
+    if original_theta.ndim != 1 or original_phi.shape != original_theta.shape:
+        raise ValueError(
+            "Evaluation theta_deg and phi_deg must be matching one-dimensional arrays."
+        )
+    theta_change = 0.0 if options["accurate"] else float(
+        options["theta_change_deg"]
+    )
+    phi_change = 0.0 if options["accurate"] else float(
+        options["phi_change_deg"]
+    )
+    evaluated_theta = _wrapped_degrees(original_theta + theta_change)
+    evaluated_phi = _wrapped_degrees(original_phi + phi_change)
+    result = dict(sample)
+    result["original_world2pix4x4"] = sample["world2pix4x4"]
+
+    if not options["accurate"]:
+        geometry = ProjectionGeometry.from_angles(
+            theta_deg=evaluated_theta,
+            phi_deg=evaluated_phi,
+            image_dim=int(np.asarray(_numpy(sample["image_dim"])).item()),
+            sid_mm=float(np.asarray(_numpy(sample["sid_mm"])).item()),
+            pixel_spacing_mm=float(
+                np.asarray(_numpy(sample["imager_pixel_spacing_mm"])).item()
+            ),
+            source_to_isocenter_mm=float(
+                np.asarray(_numpy(sample["source_to_isocenter_mm"])).item()
+            ),
+        )
+        replacements = {
+            "world2pix4x4": geometry.world2pix4x4,
+            "camera_source_xyz_mm": geometry.source_xyz_mm,
+            "detector_center_xyz_mm": geometry.detector_center_xyz_mm,
+            "detector_x_xyz": geometry.detector_x_xyz,
+            "detector_y_xyz": geometry.detector_y_xyz,
+            "view_directions_world": geometry.view_directions_world,
+        }
+        for key, value in replacements.items():
+            result[key] = _array_like(sample[key], value)
+        if geometry.num_views == 2:
+            cosine = float(
+                np.dot(
+                    geometry.view_directions_world[0],
+                    geometry.view_directions_world[1],
+                )
+            )
+            evaluated_pair_angle = float(
+                np.rad2deg(np.arccos(np.clip(cosine, -1.0, 1.0)))
+            )
+        else:
+            evaluated_pair_angle = None
+    else:
+        evaluated_pair_angle = (
+            float(np.asarray(_numpy(sample["pair_angle_deg"])).item())
+            if sample.get("pair_angle_deg") is not None
+            else None
+        )
+
+    result["evaluated_theta_deg"] = _array_like(
+        sample["theta_deg"], evaluated_theta
+    )
+    result["evaluated_phi_deg"] = _array_like(sample["phi_deg"], evaluated_phi)
+    result["theta_change_deg"] = _array_like(
+        sample["theta_deg"],
+        np.full(original_theta.shape, theta_change, dtype=np.float32),
+    )
+    result["phi_change_deg"] = _array_like(
+        sample["phi_deg"],
+        np.full(original_phi.shape, phi_change, dtype=np.float32),
+    )
+    result["view_directions_accurate"] = bool(options["accurate"])
+    result["evaluated_pair_angle_deg"] = evaluated_pair_angle
+
+    selected_indices = np.asarray(_numpy(sample["view_indices"]), dtype=np.int64)
+    records = [
+        {
+            "model_view_position": int(position),
+            "selected_view_index": int(selected_indices[position]),
+            "original_theta_deg": float(original_theta[position]),
+            "theta_change_deg": theta_change,
+            "evaluated_theta_deg": float(evaluated_theta[position]),
+            "original_phi_deg": float(original_phi[position]),
+            "phi_change_deg": phi_change,
+            "evaluated_phi_deg": float(evaluated_phi[position]),
+        }
+        for position in range(len(original_theta))
+    ]
+    return result, records
+
+
+def _view_direction_change_statistics(
+    records_by_case: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    applied: bool,
+) -> dict[str, Any]:
+    entries = [
+        entry
+        for case_records in records_by_case.values()
+        for entry in case_records
+    ]
+
+    def axis_statistics(key: str) -> dict[str, float]:
+        values = [float(entry[key]) for entry in entries]
+        if not values:
+            return {
+                "minimum": 0.0,
+                "maximum": 0.0,
+                "mean_signed": 0.0,
+                "mean_absolute": 0.0,
+                "maximum_absolute": 0.0,
+            }
+        return {
+            "minimum": min(values),
+            "maximum": max(values),
+            "mean_signed": sum(values) / len(values),
+            "mean_absolute": sum(abs(value) for value in values) / len(values),
+            "maximum_absolute": max(abs(value) for value in values),
+        }
+
+    return {
+        "applied": applied,
+        "num_cases": len(records_by_case) if applied else 0,
+        "num_perturbed_views": len(entries) if applied else 0,
+        "theta_change_deg": axis_statistics("theta_change_deg"),
+        "phi_change_deg": axis_statistics("phi_change_deg"),
+    }
 
 
 def _aligned_ground_truth(
@@ -884,11 +1134,23 @@ def _save_input_views(
     images = _numpy(sample["images"])[:, 0]
     labels = list(sample.get("view_labels", ()))
     indices = [int(value) for value in _numpy(sample["view_indices"])]
+    original_theta = _numpy(sample["theta_deg"])
+    original_phi = _numpy(sample["phi_deg"])
+    evaluated_theta = _numpy(
+        sample.get("evaluated_theta_deg", sample["theta_deg"])
+    )
+    evaluated_phi = _numpy(
+        sample.get("evaluated_phi_deg", sample["phi_deg"])
+    )
     figure, axes = plt.subplots(1, len(images), figsize=(5 * len(images), 5), squeeze=False)
     for index, image in enumerate(images):
         axes[0, index].imshow(image, cmap="gray", vmin=0.0, vmax=1.0)
         label = labels[index] if index < len(labels) else f"view {indices[index]}"
-        axes[0, index].set_title(f"Input {indices[index]}: {label}")
+        axes[0, index].set_title(
+            f"Input {indices[index]}: {label}\n"
+            f"source θ/φ={original_theta[index]:.1f}/{original_phi[index]:.1f}°, "
+            f"model θ/φ={evaluated_theta[index]:.1f}/{evaluated_phi[index]:.1f}°"
+        )
         axes[0, index].axis("off")
     figure.suptitle(f"AutoCAR input views — case {case_id}")
     figure.tight_layout()
@@ -1072,6 +1334,19 @@ def _save_visualization_bundle(
             "3d_overlay": gif_name,
             "metrics": "metrics.json",
             "prediction_npz": str(prediction_path),
+            "view_directions": {
+                "accurate": bool(sample.get("view_directions_accurate", True)),
+                "original_theta_deg": _numpy(sample["theta_deg"]).tolist(),
+                "original_phi_deg": _numpy(sample["phi_deg"]).tolist(),
+                "theta_change_deg": _numpy(sample["theta_change_deg"]).tolist(),
+                "phi_change_deg": _numpy(sample["phi_change_deg"]).tolist(),
+                "evaluated_theta_deg": _numpy(
+                    sample["evaluated_theta_deg"]
+                ).tolist(),
+                "evaluated_phi_deg": _numpy(
+                    sample["evaluated_phi_deg"]
+                ).tolist(),
+            },
         },
     )
 
@@ -1109,6 +1384,20 @@ def _save_prediction_npz(
 ) -> None:
     dtype = np.float16 if output_dtype == "float16" else np.float32
     labels = list(sample.get("view_labels", ()))
+    original_theta = _numpy(sample["theta_deg"]).astype(np.float32, copy=False)
+    original_phi = _numpy(sample["phi_deg"]).astype(np.float32, copy=False)
+    evaluated_theta = _numpy(
+        sample.get("evaluated_theta_deg", sample["theta_deg"])
+    ).astype(np.float32, copy=False)
+    evaluated_phi = _numpy(
+        sample.get("evaluated_phi_deg", sample["phi_deg"])
+    ).astype(np.float32, copy=False)
+    theta_change = _numpy(
+        sample.get("theta_change_deg", np.zeros_like(original_theta))
+    ).astype(np.float32, copy=False)
+    phi_change = _numpy(
+        sample.get("phi_change_deg", np.zeros_like(original_phi))
+    ).astype(np.float32, copy=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
@@ -1118,7 +1407,26 @@ def _save_prediction_npz(
         evaluation_role=np.asarray("final"),
         view_indices=_numpy(sample["view_indices"]).astype(np.int64, copy=False),
         pair_angle_deg=np.asarray(float(sample["pair_angle_deg"]), dtype=np.float32),
+        evaluated_pair_angle_deg=np.asarray(
+            float(sample.get("evaluated_pair_angle_deg", sample["pair_angle_deg"])),
+            dtype=np.float32,
+        ),
         view_labels=np.asarray(labels),
+        view_directions_accurate=np.asarray(
+            bool(sample.get("view_directions_accurate", True))
+        ),
+        original_theta_deg=original_theta,
+        original_phi_deg=original_phi,
+        theta_change_deg=theta_change,
+        phi_change_deg=phi_change,
+        evaluated_theta_deg=evaluated_theta,
+        evaluated_phi_deg=evaluated_phi,
+        evaluated_world2pix4x4=_numpy(sample["world2pix4x4"]).astype(
+            np.float32, copy=False
+        ),
+        original_world2pix4x4=_numpy(
+            sample.get("original_world2pix4x4", sample["world2pix4x4"])
+        ).astype(np.float32, copy=False),
         volume_axis_order=np.asarray("zyx"),
         bbox_min_xyz_mm=np.asarray(protocol["bbox_min_xyz_mm"], dtype=np.float32),
         bbox_max_xyz_mm=np.asarray(protocol["bbox_max_xyz_mm"], dtype=np.float32),
@@ -1135,6 +1443,7 @@ def _metric_values(report: Mapping[str, Any]) -> dict[str, float | int | None]:
         "view_indices",
         "view_labels",
         "pair_angle_deg",
+        "evaluated_pair_angle_deg",
         "inference_elapsed_ms",
         "processing_elapsed_ms",
     }
@@ -1430,11 +1739,14 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
     paper_metric_records: list[dict[str, Any]] = []
     prediction_records: list[dict[str, Any]] = []
     timing_rows: list[dict[str, Any]] = []
-    warmup_performed = options.evaluation_mode == "paper_metric"
+    view_direction_changes_by_case: dict[str, list[dict[str, float | int]]] = {}
+    warmup_performed = options.compute_paper_metrics
     with torch.inference_mode():
         if warmup_performed:
             print("Running one untimed model warmup on the first selected case")
-            warmup_sample = dataset[0]
+            warmup_sample, _ = evaluation_model_camera_sample(
+                dataset[0], options.view_direction_options
+            )
             _forward_dense(
                 model,
                 warmup_sample,
@@ -1444,8 +1756,12 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             del warmup_sample
         for index in range(len(dataset)):
             processing_started = time.perf_counter()
-            sample = dataset[index]
+            source_sample = dataset[index]
+            sample, view_direction_records = evaluation_model_camera_sample(
+                source_sample, options.view_direction_options
+            )
             case_id = str(sample["case_id"])
+            view_direction_changes_by_case[case_id] = view_direction_records
             dataset_split = options.case_splits[case_id]
             print(
                 f"[{index + 1}/{len(dataset)}] Reconstructing case {case_id} "
@@ -1486,12 +1802,15 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 "view_indices": [int(value) for value in _numpy(sample["view_indices"])],
                 "view_labels": list(sample.get("view_labels", ())),
                 "pair_angle_deg": float(sample["pair_angle_deg"]),
+                "evaluated_pair_angle_deg": float(
+                    sample.get("evaluated_pair_angle_deg", sample["pair_angle_deg"])
+                ),
                 "prediction": str(prediction_path),
                 "inference_elapsed_ms": elapsed_ms,
                 **metrics,
             }
             paper_record: dict[str, Any] | None = None
-            if options.evaluation_mode == "paper_metric":
+            if options.compute_paper_metrics:
                 paper_result = _paper_metric_case(
                     dense,
                     sample,
@@ -1641,11 +1960,26 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             "eval_num_views": len(options.view_indices),
             "eval_view_selection": "fixed",
             "evaluation_view_indices": list(options.view_indices),
+            "view_directions_accurate": bool(
+                options.view_direction_options["accurate"]
+            ),
+            "theta_change_deg": float(
+                options.view_direction_options["theta_change_deg"]
+            ),
+            "phi_change_deg": float(
+                options.view_direction_options["phi_change_deg"]
+            ),
         },
         "evaluation": {
             **combined,
             "metrics_by_split": metrics_by_split,
             "paper_metric": paper_summary,
+            "evaluation_view_directions": dict(options.view_direction_options),
+            "view_direction_changes_by_case": view_direction_changes_by_case,
+            "view_direction_change_statistics": _view_direction_change_statistics(
+                view_direction_changes_by_case,
+                applied=not bool(options.view_direction_options["accurate"]),
+            ),
         },
         "timing": timing_summary,
         "roles": {"final": role_summary},
@@ -1699,7 +2033,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         timing_summary,
     )
 
-    if options.evaluation_mode in {"metric", "paper_metric"}:
+    if options.evaluation_mode in {"metric", "paper_metric"} or options.compute_paper_metrics:
         metrics_dir = output_dir / "metrics"
         flat_rows = _flat_rows(reports)
         _write_json(metrics_dir / "per_case_metrics.json", reports)
@@ -1714,7 +2048,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             },
         )
         _save_metric_histogram(reports, metrics_dir / "comparison_histogram.png")
-        if options.evaluation_mode == "paper_metric":
+        if options.compute_paper_metrics:
             assert paper_summary is not None
             _write_json(
                 metrics_dir / "paper_metric_per_case.json",
@@ -1769,6 +2103,12 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         "evaluation_view_labels": (
             None if options.view_labels is None else list(options.view_labels)
         ),
+        "evaluation_view_directions": dict(options.view_direction_options),
+        "view_direction_changes_by_case": view_direction_changes_by_case,
+        "view_direction_change_statistics": _view_direction_change_statistics(
+            view_direction_changes_by_case,
+            applied=not bool(options.view_direction_options["accurate"]),
+        ),
         "expected_imager_pixel_spacing_mm": (
             options.expected_imager_pixel_spacing_mm
         ),
@@ -1800,11 +2140,14 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 "visualization/<case_id>/<split>/final" if options.max_visualizations else None
             ),
             "metrics": (
-                "metrics" if options.evaluation_mode in {"metric", "paper_metric"} else None
+                "metrics"
+                if options.evaluation_mode in {"metric", "paper_metric"}
+                or options.compute_paper_metrics
+                else None
             ),
             "paper_metric_masks": (
                 "metrics/voxel_masks/final/<split>/case_<id>_<split>.npz"
-                if options.evaluation_mode == "paper_metric"
+                if options.compute_paper_metrics
                 and options.paper_metric_save_masks
                 else None
             ),
@@ -1844,8 +2187,57 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    config_path = Path(args.config).expanduser().resolve()
+    raw_config = _load_json_object(config_path)
+    from src.view_direction_robustness_npz import (
+        is_view_direction_robustness_mode,
+        run_view_direction_robustness,
+    )
+
+    if is_view_direction_robustness_mode(raw_config.get("evaluation_mode")):
+        if args.metrics_only:
+            raise ValueError(
+                "--metrics_only cannot replace the inaccurate-view-direction "
+                "orchestrator mode."
+            )
+        sweep_config = dict(raw_config)
+        if args.split is not None:
+            sweep_config["eval_split"] = args.split
+        if args.case_ids:
+            sweep_config["eval_case_ids"] = list(args.case_ids)
+        if args.max_cases is not None:
+            sweep_config["num_eval_cases"] = args.max_cases
+        checkpoint, checkpoint_choice = _resolve_checkpoint(
+            sweep_config,
+            config_path=config_path,
+            cli_checkpoint=args.checkpoint,
+        )
+        experiment_raw = sweep_config.get("experiment_dir")
+        if experiment_raw is not None and str(experiment_raw).strip():
+            experiment_dir = _resolve_path(
+                experiment_raw,
+                config_path=config_path,
+                label="experiment_dir",
+            )
+        else:
+            experiment_dir = (
+                checkpoint.parent.parent
+                if checkpoint.parent.name == "checkpoints"
+                else checkpoint.parent
+            )
+        aggregate_path = run_view_direction_robustness(
+            eval_config=sweep_config,
+            config_path=config_path,
+            checkpoint=checkpoint,
+            checkpoint_choice=checkpoint_choice,
+            experiment_dir=experiment_dir,
+            output_override=args.output_dir,
+            project_root=Path(__file__).resolve().parents[1],
+        )
+        print(f"Completed inaccurate view-direction evaluation: {aggregate_path}")
+        return 0
     options = resolve_evaluation_options(
-        args.config,
+        config_path,
         cli_checkpoint=args.checkpoint,
         cli_output_dir=args.output_dir,
         cli_split=args.split,

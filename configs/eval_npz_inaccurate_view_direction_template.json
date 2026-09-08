@@ -1,0 +1,57 @@
+{
+  "experiment_dir": null,
+  "checkpoint_path": "/path/to/checkpoints/best.ckpt",
+  "checkpoint_choice": "best",
+  "projection_source": "/path/to/stage2/projections",
+  "voxel_source": "/path/to/stage2/voxels",
+  "split_json_path": "/path/to/stage2/splits.json",
+  "eval_output_dir": "/path/to/results/autocar/evaluation_inaccurate_view_direction_robustness",
+
+  "evaluation_mode": "inaccurate_view_direction",
+  "eval_split": "val_test",
+  "num_eval_cases": "all",
+  "eval_case_ids": null,
+  "eval_num_views": 2,
+  "eval_view_selection": "fixed",
+  "evaluation_view_indices": [0, 6],
+  "evaluation_view_labels": ["RAO 25, CAU 35", "LAO 5, CRA 40"],
+  "case_id_mode": "imagecas_numeric",
+  "expected_imager_pixel_spacing_mm": null,
+  "fallback_imager_pixel_spacing_mm": null,
+  "fallback_sid_mm": null,
+  "source_to_isocenter_mm": 750.0,
+
+  "save_prediction_npz_files": true,
+  "max_visualizations": 2,
+  "visualization_gif_frames": 24,
+  "visualization_gif_fps": 6,
+  "visualization_max_points": 20000,
+  "device": "auto",
+  "precision": "32",
+  "output_dtype": "float16",
+  "paper_metric_volume_threshold": 0.5,
+  "paper_metric_ssim_window_size": 7,
+  "ssim_chunk_depth": 8,
+  "ground_truth_origin_xyz_mm": null,
+  "overwrite": false,
+
+  "view_direction_robustness": {
+    "axis_degrees": [2.0, 5.0, 10.0, 15.0],
+    "combined_degrees": [5.0, 10.0],
+    "visualization_conditions_deg": [
+      [-10.0, 0.0],
+      [10.0, 0.0],
+      [0.0, -10.0],
+      [0.0, 10.0],
+      [-10.0, -10.0],
+      [-10.0, 10.0],
+      [10.0, -10.0],
+      [10.0, 10.0]
+    ],
+    "accurate_baseline_summary": "auto",
+    "require_accurate_baseline": true,
+    "record_paper_metrics": true,
+    "save_mask_npz_files": false,
+    "output_dir": null
+  }
+}

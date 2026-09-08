@@ -126,6 +126,11 @@ def _evaluation_config(
         "eval_view_selection": "fixed",
         "evaluation_view_indices": list(dataset["evaluation_view_indices"]),
         "evaluation_view_labels": None if labels is None else list(labels),
+        "evaluation_view_directions": {
+            "accurate": True,
+            "theta_change_deg": 0.0,
+            "phi_change_deg": 0.0,
+        },
         "case_id_mode": "imagecas_numeric",
         "expected_imager_pixel_spacing_mm": dataset[
             "expected_imager_pixel_spacing_mm"

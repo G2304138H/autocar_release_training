@@ -12,6 +12,8 @@ pytest.importorskip("lightning")
 import src.eval_npz as eval_npz
 from src.eval_npz import (
     EvaluationOptions,
+    _view_direction_change_statistics,
+    evaluation_model_camera_sample,
     _paper_metric_case,
     _paper_metric_summary,
     _processing_timing_summary,
@@ -19,8 +21,10 @@ from src.eval_npz import (
     _selected_split_cases,
     build_parser,
     resolve_evaluation_options,
+    resolve_evaluation_view_directions,
     run_evaluation,
 )
+from src.geometry.projection_geometry import ProjectionGeometry
 
 
 def test_val_test_selection_preserves_split_order_and_labels():
@@ -90,6 +94,8 @@ def test_config_resolves_relative_paths_and_visualization_alias(tmp_path):
     assert options.fallback_imager_pixel_spacing_mm == 0.55
     assert options.fallback_sid_mm == 900.0
     assert options.output_dir == (tmp_path / "result").resolve()
+    assert options.view_direction_options["accurate"] is True
+    assert options.compute_paper_metrics is False
 
 
 def test_prediction_npz_uses_stable_volume_and_evaluation_fields(tmp_path):
@@ -97,6 +103,9 @@ def test_prediction_npz_uses_stable_volume_and_evaluation_fields(tmp_path):
     sample = {
         "case_id": "17",
         "view_indices": torch.tensor([0, 6]),
+        "theta_deg": torch.tensor([10.0, -20.0]),
+        "phi_deg": torch.tensor([5.0, 15.0]),
+        "world2pix4x4": torch.eye(4).repeat(2, 1, 1),
         "pair_angle_deg": torch.tensor(62.5),
         "view_labels": ("first", "second"),
     }
@@ -122,6 +131,63 @@ def test_prediction_npz_uses_stable_volume_and_evaluation_fields(tmp_path):
         assert payload["dataset_split"].item() == "test"
         assert payload["evaluation_role"].item() == "final"
         np.testing.assert_array_equal(payload["view_indices"], [0, 6])
+        np.testing.assert_array_equal(payload["theta_change_deg"], [0.0, 0.0])
+        assert payload["view_directions_accurate"].item()
+
+
+def test_inaccurate_view_directions_recompute_both_camera_matrices_without_images():
+    geometry = ProjectionGeometry.from_angles(
+        theta_deg=np.asarray([10.0, -20.0]),
+        phi_deg=np.asarray([5.0, 15.0]),
+        image_dim=32,
+        sid_mm=900.0,
+        pixel_spacing_mm=0.55,
+        source_to_isocenter_mm=750.0,
+    )
+    sample = {
+        "case_id": "17",
+        "images": torch.arange(2 * 32 * 32, dtype=torch.float32).reshape(2, 1, 32, 32),
+        "view_indices": torch.tensor([0, 6]),
+        "theta_deg": torch.from_numpy(geometry.theta_deg),
+        "phi_deg": torch.from_numpy(geometry.phi_deg),
+        "world2pix4x4": torch.from_numpy(geometry.world2pix4x4),
+        "camera_source_xyz_mm": torch.from_numpy(geometry.source_xyz_mm),
+        "detector_center_xyz_mm": torch.from_numpy(geometry.detector_center_xyz_mm),
+        "detector_x_xyz": torch.from_numpy(geometry.detector_x_xyz),
+        "detector_y_xyz": torch.from_numpy(geometry.detector_y_xyz),
+        "view_directions_world": torch.from_numpy(geometry.view_directions_world),
+        "image_dim": torch.tensor(32),
+        "sid_mm": torch.tensor(900.0),
+        "imager_pixel_spacing_mm": torch.tensor(0.55),
+        "source_to_isocenter_mm": torch.tensor(750.0),
+        "pair_angle_deg": torch.tensor(30.0),
+    }
+    original_images = sample["images"].clone()
+    original_matrices = sample["world2pix4x4"].clone()
+    options = resolve_evaluation_view_directions(
+        {
+            "evaluation_view_directions": {
+                "accurate": False,
+                "theta_change_deg": 5.0,
+                "phi_change_deg": -2.0,
+            }
+        }
+    )
+
+    evaluated, records = evaluation_model_camera_sample(sample, options)
+
+    torch.testing.assert_close(sample["images"], original_images)
+    torch.testing.assert_close(evaluated["images"], original_images)
+    torch.testing.assert_close(sample["world2pix4x4"], original_matrices)
+    assert not torch.equal(evaluated["world2pix4x4"], original_matrices)
+    torch.testing.assert_close(evaluated["evaluated_theta_deg"], torch.tensor([15.0, -15.0]))
+    torch.testing.assert_close(evaluated["evaluated_phi_deg"], torch.tensor([3.0, 13.0]))
+    assert [record["selected_view_index"] for record in records] == [0, 6]
+    assert all(record["theta_change_deg"] == 5.0 for record in records)
+    assert all(record["phi_change_deg"] == -2.0 for record in records)
+    statistics = _view_direction_change_statistics({"17": records}, applied=True)
+    assert statistics["num_perturbed_views"] == 2
+    assert statistics["theta_change_deg"]["mean_signed"] == 5.0
 
 
 def test_paper_summary_reports_macro_standard_error_and_micro_dice():
@@ -255,6 +321,9 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
                 {
                     "case_id": "2",
                     "view_indices": np.asarray([0, 6]),
+                    "theta_deg": torch.tensor([10.0, -20.0]),
+                    "phi_deg": torch.tensor([5.0, 15.0]),
+                    "world2pix4x4": torch.eye(4).repeat(2, 1, 1),
                     "view_labels": ("first", "second"),
                     "pair_angle_deg": 60.0,
                     "voxel_path": "ground_truth.npz",
@@ -341,6 +410,14 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
         fallback_sid_mm=900.0,
         view_indices=(0, 6),
         view_labels=("first", "second"),
+        view_direction_options={
+            "accurate": True,
+            "theta_change_deg": 0.0,
+            "phi_change_deg": 0.0,
+            "distribution": "fixed_per_view",
+            "model_interface": "world2pix4x4",
+        },
+        compute_paper_metrics=False,
         device="cpu",
         precision="32",
         output_dtype="float16",

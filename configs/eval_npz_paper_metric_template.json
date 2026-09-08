@@ -15,6 +15,11 @@
   "eval_view_selection": "fixed",
   "evaluation_view_indices": [0, 6],
   "evaluation_view_labels": ["RAO 25, CAU 35", "LAO 5, CRA 40"],
+  "evaluation_view_directions": {
+    "accurate": true,
+    "theta_change_deg": 0.0,
+    "phi_change_deg": 0.0
+  },
   "case_id_mode": "literal",
   "expected_imager_pixel_spacing_mm": null,
   "fallback_imager_pixel_spacing_mm": null,

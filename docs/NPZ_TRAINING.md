@@ -688,6 +688,67 @@ and the paired LCA/RCA launcher summary. As in the parametric evaluator, one
 model forward on the first selected case is performed as an untimed warmup
 before all reported case timings.
 
+### Inaccurate view-direction robustness
+
+Run the accurate validation-plus-test paper metrics first, then launch the
+matched inaccurate-view sweep for both trained artery checkpoints:
+
+```bash
+python scripts/evaluate_imagecas_npz.py
+python scripts/evaluate_imagecas_npz_inaccurate_view_direction.py
+```
+
+For a manually selected checkpoint and data layout, copy
+`configs/eval_npz_inaccurate_view_direction_template.json`, fill its paths,
+and run `python -m src.eval_npz --config <copied-config.json>`.
+
+The second launcher uses `evaluation_mode: "inaccurate_view_direction"` and
+reproduces the parametric evaluator's deterministic 24-condition protocol:
+signed theta-only and phi-only errors at 2, 5, 10, and 15 degrees, plus all
+four signed theta/phi combinations at magnitudes 5 and 10 degrees. The two
+selected projection images remain unchanged. Because AutoCAR consumes camera
+matrices rather than the parametric model's sine/cosine angle features, both
+selected `world2pix4x4` matrices and their associated camera geometry are
+regenerated from the perturbed theta/phi values before every model forward.
+The source projection NPZ files are never modified.
+
+The accurate baseline is read automatically from
+`<training_run>/evaluation_paper_metric/<checkpoint>/performance_summary.json`.
+The sweep verifies the checkpoint, ordered case list, split, fixed view indices,
+and view count before comparing a condition with that baseline. Override a
+nonstandard baseline with `--lca-accurate-baseline-summary` or
+`--rca-accurate-baseline-summary`. Use `--axis-degrees` and
+`--combined-degrees` to change the grid, `--no-visualizations` to suppress the
+representative 10-degree monitor bundles, and `--dry-run` to write and inspect
+the resolved LCA/RCA configurations without running inference.
+
+By default, each artery writes to:
+
+```text
+<training_run>/evaluation_inaccurate_view_direction_robustness/<checkpoint>/
+  view_direction_robustness_summary.json
+  view_direction_robustness_metrics.csv
+  view_direction_robustness_timing.csv
+  run_configs/<condition>.json
+  conditions/<condition>/
+    performance_summary.json
+    performance_per_case.json
+    evaluation_record.json
+    predictions/final/{validation,test}/<case_id>.npz
+    metrics/paper_metric_per_case.{json,csv}
+    metrics/paper_metric_summary.json
+    timings/processing/{per_case.csv,summary.json}
+    visualization/  # representative conditions only
+```
+
+Every prediction NPZ records the original theta/phi values, fixed signed
+changes, evaluated angles, evaluated pair angle, and exact evaluated camera
+matrices. The aggregate JSON/CSV reports every final-role metric, signed and
+percentage changes from the accurate baseline, per-condition average timing,
+and descriptive quadratic theta/phi response surfaces. LCA and RCA remain
+separate in the combined launcher summary. No dependencies beyond the current
+NPZ training/evaluation environment are required.
+
 For a visual check of one validation/test case, select the artery and physical
 case number:
 
