@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render one val/test ImageCAS case with a trained LCA or RCA checkpoint."""
+"""Render one val/test case, including a voxel-derived vascular surface."""
 
 from __future__ import annotations
 
@@ -71,7 +71,10 @@ def _parser() -> argparse.ArgumentParser:
         "--gif-frames",
         type=int,
         default=24,
-        help="Number of rotating 3D overlay frames; use 0 to skip the GIF.",
+        help=(
+            "Frames for both rotating voxel and centerline-radius surface "
+            "visualizations; use 0 to skip GIFs."
+        ),
     )
     parser.add_argument("--gif-fps", type=int, default=6)
     parser.add_argument("--visualization-max-points", type=int, default=20_000)

@@ -7,7 +7,8 @@ baseline while keeping AutoCAR's existing Stage-2 volume and metric contracts:
 * every selected case is reconstructed from its input views;
 * the dense probability volume is saved as a self-describing compressed NPZ;
 * paper-metric mode writes per-case CSV/JSON and aggregate summaries; and
-* visualisation mode additionally writes an input-view/volume monitor bundle;
+* visualisation mode additionally writes input-view, volume, and derived
+  centerline-radius surface monitor artifacts;
 * inaccurate-view mode sweeps fixed signed camera-angle errors while keeping
   the two source projection images unchanged.
 """
@@ -33,6 +34,7 @@ from src.dataset.case_splits import load_case_splits
 from src.dataset.stage2_npz import Stage2NPZDataset
 from src.evaluate_npz import evaluate_case
 from src.geometry.projection_geometry import ProjectionGeometry
+from src.geometry.vascular_surface import save_vascular_surface_bundle
 from src.geometry.voxel_grid import VoxelGrid, resample_binary_volume_nearest
 from src.metrics import compute_volume_metrics, masked_ssim_3d
 from src.modules.autocar_voxel_pl import AutoCARVoxelLit
@@ -1324,6 +1326,20 @@ def _save_visualization_bundle(
             maximum_points=maximum_points,
             case_id=case_id,
         )
+    vascular_surface = save_vascular_surface_bundle(
+        path / "vascular_surface",
+        prediction_zyx,
+        case_id=case_id,
+        threshold=threshold,
+        origin_xyz_mm=bbox_min_xyz_mm,
+        spacing_xyz_mm=(float(voxel_size_mm),) * 3,
+        projection_center_offset_xyz_mm=_numpy(
+            sample["projection_center_offset_xyz_mm"]
+        ),
+        gif_frames=gif_frames,
+        gif_fps=gif_fps,
+        maximum_plot_elements=maximum_points,
+    )
     _write_json(path / "metrics.json", metrics)
     _write_json(
         path / "evaluation_result_manifest.json",
@@ -1332,6 +1348,11 @@ def _save_visualization_bundle(
             "input_views": "input_views.png",
             "volume_comparison": "volume_comparison.png",
             "3d_overlay": gif_name,
+            "vascular_surface": {
+                "directory": "vascular_surface",
+                "manifest": "vascular_surface/manifest.json",
+                **vascular_surface,
+            },
             "metrics": "metrics.json",
             "prediction_npz": str(prediction_path),
             "view_directions": {

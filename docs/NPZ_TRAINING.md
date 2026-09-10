@@ -2,13 +2,16 @@
 
 This document defines the maintained path for training a static two-view
 AutoCAR reconstruction model from pre-rendered vessel masks and voxel ground
-truth. Dynamic graph construction and voxel-to-graph post-processing are not
-part of this path.
+truth. Per-case visualization can derive a static centerline-radius graph and
+surface from predicted occupancy. That post-processing is explicitly excluded
+from training and quantitative voxel metrics; dynamic temporal graph
+reconstruction remains outside this path.
 
 The released ImageCAS mesh-rendering pipeline remains available as a legacy
 reference. The NPZ path does not require PyTorch3D, `pysdf`, trimesh, napari, or
-MinkowskiEngine. Its data alignment and 3D metrics are NumPy implementations,
-so scikit-image, nibabel, and OpenCV are not primary dependencies either.
+MinkowskiEngine. Its data alignment and 3D metrics are NumPy implementations;
+SciPy and scikit-image are used only by voxel-derived graph/surface
+visualization. Nibabel and OpenCV are not primary dependencies.
 
 ## 1. Environment profiles
 
@@ -764,7 +767,22 @@ belong to the recorded validation or test split. Its
 `visualization/<case>/<split>/final/` directory contains the input-view panel,
 orthogonal GT/prediction overlays, rotating 3D overlay GIF, case metrics,
 and an artifact manifest that links to the saved full-resolution prediction
-NPZ. Use `--gif-frames 0` to omit only the GIF, or `--output-dir` to override
+NPZ. The nested `vascular_surface/` directory additionally contains:
+
+- `predicted_centerline_graph.npz`: 26-connected skeleton nodes and edges,
+  node type/component labels, centered and native XYZ coordinates, and an EDT
+  radius estimate in millimetres;
+- `predicted_radius_surface.ply`: the marching-cubes prediction surface with a
+  per-vertex `radius_mm` property and matching red-to-green vertex colours;
+- `predicted_surface_centerline_radius.png`: a radius-coloured surface with the
+  extracted centerline graph overlaid; and
+- `predicted_surface_centerline_radius.gif`: the corresponding rotating view
+  when GIF generation is enabled.
+
+These are visualization-only derivatives of the thresholded prediction. They
+never use the reference vessel code stored beside the input projections and do
+not affect Dice, SSIM, checkpoint selection, or reported processing timing.
+Use `--gif-frames 0` to omit both rotating GIFs, or `--output-dir` to override
 the destination.
 
 The framework-independent evaluator accepts one exported probability or logit

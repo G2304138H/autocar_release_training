@@ -8,8 +8,10 @@ Transferable 3D Dynamic Vascular Reconstruction For Instantaneous Diagnosis*.
 > **Maintained NPZ training path:** this fork adds a documented, testable path
 > from paired multi-view projection masks to supervised 3D voxel occupancy.
 > Start with [Training and evaluating AutoCAR on paired NPZ data](docs/NPZ_TRAINING.md).
-> Voxel-to-graph conversion and dynamic graph post-processing are intentionally
-> outside that reconstruction-comparison path.
+> Per-case visualization can derive a static centerline-radius graph and a
+> radius-coloured surface from predicted occupancy. This post-processing is not
+> used by training or quantitative metrics; dynamic graph reconstruction remains
+> outside the reconstruction-comparison path.
 
 The supplied cluster datasets have ready-to-run LCA/RCA configurations and a
 preflight launcher:
