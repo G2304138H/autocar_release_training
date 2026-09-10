@@ -9,6 +9,7 @@ pytest.importorskip("scipy")
 pytest.importorskip("skimage")
 
 from src.geometry.vascular_surface import (
+    extract_centerline_graph,
     extract_vascular_graph_surface,
     save_vascular_surface_bundle,
 )
@@ -18,6 +19,19 @@ def _straight_vessel() -> np.ndarray:
     volume = np.zeros((9, 9, 9), dtype=np.float32)
     volume[2:7, 3:6, 3:6] = 0.9
     return volume
+
+
+def test_centerline_graph_accepts_binary_paper_metric_mask():
+    graph = extract_centerline_graph(
+        _straight_vessel() >= 0.5,
+        threshold=0.5,
+        origin_xyz_mm=(-4.5, -4.5, -4.5),
+        spacing_xyz_mm=(1.0, 1.0, 1.0),
+    )
+
+    assert graph.foreground_voxels == 45
+    assert graph.component_count == 1
+    assert np.all(graph.node_radius_mm > 0.0)
 
 
 def test_extracts_centerline_radii_and_physical_surface():

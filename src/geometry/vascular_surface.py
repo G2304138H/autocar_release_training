@@ -1,7 +1,8 @@
 """Extract and render a vascular graph/surface from a predicted voxel volume.
 
 AutoCAR predicts occupancy on a regular grid rather than an ordered vascular
-tree.  This module provides visualization-only post-processing:
+tree. This module provides derived centerline/radius and visualization
+post-processing:
 
 * threshold the probability volume;
 * skeletonize the foreground into a 26-connected voxel graph;
@@ -11,7 +12,8 @@ tree.  This module provides visualization-only post-processing:
   the nearest graph-node radius.
 
 The graph and surface remain explicitly labelled as derived post-processing;
-they are not model outputs and are not used by the quantitative voxel metrics.
+they are not direct model outputs. Paper-metric evaluation uses paired aligned
+graphs for hard clDice, while triangle surfaces remain visualization-only.
 """
 
 from __future__ import annotations
@@ -25,8 +27,8 @@ import numpy as np
 
 
 @dataclass(frozen=True)
-class VascularGraphSurface:
-    """Voxel-derived graph and triangle surface in physical XYZ millimetres."""
+class VascularCenterlineGraph:
+    """Morphologically thinned voxel graph with physical node radii."""
 
     source_shape_zyx: tuple[int, int, int]
     threshold: float
@@ -38,9 +40,6 @@ class VascularGraphSurface:
     node_degree: np.ndarray
     node_kind: np.ndarray
     component_id: np.ndarray
-    surface_vertices_xyz_mm: np.ndarray
-    surface_faces: np.ndarray
-    surface_vertex_radius_mm: np.ndarray
 
     @property
     def component_count(self) -> int:
@@ -49,6 +48,15 @@ class VascularGraphSurface:
             if self.component_id.size
             else 0
         )
+
+
+@dataclass(frozen=True)
+class VascularGraphSurface(VascularCenterlineGraph):
+    """Voxel-derived graph and triangle surface in physical XYZ millimetres."""
+
+    surface_vertices_xyz_mm: np.ndarray
+    surface_faces: np.ndarray
+    surface_vertex_radius_mm: np.ndarray
 
 
 def _finite_xyz(values: Sequence[float], *, label: str) -> np.ndarray:
@@ -66,19 +74,20 @@ def _postprocessing_dependencies():
         from skimage.morphology import skeletonize
     except ModuleNotFoundError as error:
         raise ModuleNotFoundError(
-            "Vascular surface visualization requires scipy and scikit-image. "
+            "Centerline graph and surface post-processing requires scipy and "
+            "scikit-image. "
             "Install the maintained environment requirements before running "
-            "per-case visualization."
+            "evaluation."
         ) from error
     return ndimage, cKDTree, marching_cubes, skeletonize
 
 
-def _empty_result(
+def _empty_centerline_result(
     shape_zyx: tuple[int, int, int],
     *,
     threshold: float,
-) -> VascularGraphSurface:
-    return VascularGraphSurface(
+) -> VascularCenterlineGraph:
+    return VascularCenterlineGraph(
         source_shape_zyx=shape_zyx,
         threshold=threshold,
         foreground_voxels=0,
@@ -89,6 +98,26 @@ def _empty_result(
         node_degree=np.empty((0,), dtype=np.int16),
         node_kind=np.empty((0,), dtype=np.int8),
         component_id=np.empty((0,), dtype=np.int32),
+    )
+
+
+def _empty_result(
+    shape_zyx: tuple[int, int, int],
+    *,
+    threshold: float,
+) -> VascularGraphSurface:
+    graph = _empty_centerline_result(shape_zyx, threshold=threshold)
+    return VascularGraphSurface(
+        source_shape_zyx=graph.source_shape_zyx,
+        threshold=graph.threshold,
+        foreground_voxels=graph.foreground_voxels,
+        node_index_zyx=graph.node_index_zyx,
+        node_xyz_mm=graph.node_xyz_mm,
+        node_radius_mm=graph.node_radius_mm,
+        edge_node_indices=graph.edge_node_indices,
+        node_degree=graph.node_degree,
+        node_kind=graph.node_kind,
+        component_id=graph.component_id,
         surface_vertices_xyz_mm=np.empty((0, 3), dtype=np.float32),
         surface_faces=np.empty((0, 3), dtype=np.int32),
         surface_vertex_radius_mm=np.empty((0,), dtype=np.float32),
@@ -150,21 +179,46 @@ def _skeleton_edges(
     )
 
 
-def extract_vascular_graph_surface(
+def _tight_padded_foreground(mask_zyx: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    occupied_axes = (
+        np.flatnonzero(np.any(mask_zyx, axis=(1, 2))),
+        np.flatnonzero(np.any(mask_zyx, axis=(0, 2))),
+        np.flatnonzero(np.any(mask_zyx, axis=(0, 1))),
+    )
+    crop_min_zyx = np.asarray(
+        [indices[0] for indices in occupied_axes], dtype=np.int64
+    )
+    crop_max_zyx = np.asarray(
+        [indices[-1] + 1 for indices in occupied_axes], dtype=np.int64
+    )
+    crop_slices = tuple(
+        slice(int(minimum), int(maximum))
+        for minimum, maximum in zip(crop_min_zyx, crop_max_zyx)
+    )
+    padded = np.pad(
+        mask_zyx[crop_slices], 1, mode="constant", constant_values=False
+    )
+    return padded, crop_min_zyx
+
+
+def extract_centerline_graph(
     prediction_zyx: np.ndarray,
     *,
     threshold: float,
     origin_xyz_mm: Sequence[float],
     spacing_xyz_mm: Sequence[float],
-) -> VascularGraphSurface:
-    """Derive a skeleton graph, radii, and occupancy surface from a prediction."""
+) -> VascularCenterlineGraph:
+    """Morphologically thin a volume and estimate graph-node radii with EDT."""
 
     volume = np.asarray(prediction_zyx)
     if volume.ndim != 3 or min(volume.shape, default=0) <= 0:
         raise ValueError(
             f"prediction_zyx must be a non-empty 3D array, got {volume.shape}."
         )
-    if not np.issubdtype(volume.dtype, np.number) or not np.isfinite(volume).all():
+    is_numeric = np.issubdtype(volume.dtype, np.number) or np.issubdtype(
+        volume.dtype, np.bool_
+    )
+    if not is_numeric or not np.isfinite(volume).all():
         raise ValueError("prediction_zyx must contain finite numeric values.")
     threshold = float(threshold)
     if not np.isfinite(threshold):
@@ -178,30 +232,13 @@ def extract_vascular_graph_surface(
     foreground_voxels = int(np.count_nonzero(mask))
     shape_zyx = tuple(int(value) for value in volume.shape)
     if foreground_voxels == 0:
-        return _empty_result(shape_zyx, threshold=threshold)
+        return _empty_centerline_result(shape_zyx, threshold=threshold)
 
-    ndimage, cKDTree, marching_cubes, skeletonize = (
-        _postprocessing_dependencies()
-    )
-    occupied_axes = (
-        np.flatnonzero(np.any(mask, axis=(1, 2))),
-        np.flatnonzero(np.any(mask, axis=(0, 2))),
-        np.flatnonzero(np.any(mask, axis=(0, 1))),
-    )
-    crop_min_zyx = np.asarray(
-        [indices[0] for indices in occupied_axes], dtype=np.int64
-    )
-    crop_max_zyx = np.asarray(
-        [indices[-1] + 1 for indices in occupied_axes], dtype=np.int64
-    )
-    crop_slices = tuple(
-        slice(int(minimum), int(maximum))
-        for minimum, maximum in zip(crop_min_zyx, crop_max_zyx)
-    )
+    ndimage, _, _, skeletonize = _postprocessing_dependencies()
     # The explicit false border makes the foreground closed even when it touches
     # the AutoCAR reconstruction boundary and keeps the expensive operations on
     # the tight foreground box rather than the complete 400^3 prediction grid.
-    padded_mask = np.pad(mask[crop_slices], 1, mode="constant", constant_values=False)
+    padded_mask, crop_min_zyx = _tight_padded_foreground(mask)
     skeleton = np.asarray(
         skeletonize(padded_mask, method="lee"), dtype=np.bool_
     )
@@ -255,6 +292,44 @@ def extract_vascular_graph_surface(
         * spacing_xyz[None, :]
     ).astype(np.float32)
 
+    return VascularCenterlineGraph(
+        source_shape_zyx=shape_zyx,
+        threshold=threshold,
+        foreground_voxels=foreground_voxels,
+        node_index_zyx=original_node_index_zyx.astype(np.int32),
+        node_xyz_mm=node_xyz_mm,
+        node_radius_mm=node_radius_mm,
+        edge_node_indices=edges,
+        node_degree=degrees,
+        node_kind=node_kind,
+        component_id=component_id,
+    )
+
+
+def extract_vascular_graph_surface(
+    prediction_zyx: np.ndarray,
+    *,
+    threshold: float,
+    origin_xyz_mm: Sequence[float],
+    spacing_xyz_mm: Sequence[float],
+) -> VascularGraphSurface:
+    """Derive a skeleton graph, radii, and occupancy surface from a prediction."""
+
+    graph = extract_centerline_graph(
+        prediction_zyx,
+        threshold=threshold,
+        origin_xyz_mm=origin_xyz_mm,
+        spacing_xyz_mm=spacing_xyz_mm,
+    )
+    if graph.foreground_voxels == 0:
+        return _empty_result(graph.source_shape_zyx, threshold=graph.threshold)
+
+    mask = np.asarray(prediction_zyx) >= graph.threshold
+    padded_mask, crop_min_zyx = _tight_padded_foreground(mask)
+    _, cKDTree, marching_cubes, _ = _postprocessing_dependencies()
+    origin_xyz = _finite_xyz(origin_xyz_mm, label="origin_xyz_mm")
+    spacing_xyz = _finite_xyz(spacing_xyz_mm, label="spacing_xyz_mm")
+    spacing_zyx = spacing_xyz[::-1]
     vertices_zyx_mm, faces, _, _ = marching_cubes(
         padded_mask.astype(np.float32),
         level=0.5,
@@ -272,26 +347,26 @@ def extract_vascular_graph_surface(
         vertices_zyx_mm[:, ::-1] + origin_xyz[None, :]
     ).astype(np.float32)
     surface_faces = np.asarray(faces, dtype=np.int32)
-    _, nearest_node = cKDTree(node_xyz_mm).query(
+    _, nearest_node = cKDTree(graph.node_xyz_mm).query(
         surface_vertices_xyz_mm,
         k=1,
         workers=-1,
     )
-    surface_vertex_radius_mm = node_radius_mm[
+    surface_vertex_radius_mm = graph.node_radius_mm[
         np.asarray(nearest_node, dtype=np.int64)
     ].astype(np.float32)
 
     return VascularGraphSurface(
-        source_shape_zyx=shape_zyx,
-        threshold=threshold,
-        foreground_voxels=foreground_voxels,
-        node_index_zyx=original_node_index_zyx.astype(np.int32),
-        node_xyz_mm=node_xyz_mm,
-        node_radius_mm=node_radius_mm,
-        edge_node_indices=edges,
-        node_degree=degrees,
-        node_kind=node_kind,
-        component_id=component_id,
+        source_shape_zyx=graph.source_shape_zyx,
+        threshold=graph.threshold,
+        foreground_voxels=graph.foreground_voxels,
+        node_index_zyx=graph.node_index_zyx,
+        node_xyz_mm=graph.node_xyz_mm,
+        node_radius_mm=graph.node_radius_mm,
+        edge_node_indices=graph.edge_node_indices,
+        node_degree=graph.node_degree,
+        node_kind=graph.node_kind,
+        component_id=graph.component_id,
         surface_vertices_xyz_mm=surface_vertices_xyz_mm,
         surface_faces=surface_faces,
         surface_vertex_radius_mm=surface_vertex_radius_mm,
@@ -326,7 +401,7 @@ def _radius_rgb(radius_mm: np.ndarray) -> tuple[np.ndarray, float, float]:
 
 def save_vascular_graph_npz(
     path: Path,
-    result: VascularGraphSurface,
+    result: VascularCenterlineGraph,
     *,
     projection_center_offset_xyz_mm: Sequence[float],
 ) -> None:

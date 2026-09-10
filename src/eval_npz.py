@@ -34,9 +34,13 @@ from src.dataset.case_splits import load_case_splits
 from src.dataset.stage2_npz import Stage2NPZDataset
 from src.evaluate_npz import evaluate_case
 from src.geometry.projection_geometry import ProjectionGeometry
-from src.geometry.vascular_surface import save_vascular_surface_bundle
+from src.geometry.vascular_surface import (
+    VascularCenterlineGraph,
+    extract_centerline_graph,
+    save_vascular_surface_bundle,
+)
 from src.geometry.voxel_grid import VoxelGrid, resample_binary_volume_nearest
-from src.metrics import compute_volume_metrics, masked_ssim_3d
+from src.metrics import compute_volume_metrics, hard_cldice_3d, masked_ssim_3d
 from src.modules.autocar_voxel_pl import AutoCARVoxelLit
 from src.modules.sparse_utils import rasterize_sparse_channel
 from src.predict_npz import _aggregate_metrics, _device
@@ -79,6 +83,7 @@ class EvaluationOptions:
     output_dtype: str
     prediction_threshold: float
     paper_metric_save_masks: bool
+    paper_metric_save_centerline_graphs: bool
     ssim_window_size: int
     ssim_chunk_depth: int
     ground_truth_origin_xyz_mm: tuple[float, float, float] | None
@@ -604,6 +609,11 @@ def resolve_evaluation_options(
     paper_metric_save_masks = config.get("paper_metric_save_masks", True)
     if not isinstance(paper_metric_save_masks, bool):
         raise ValueError("paper_metric_save_masks must be boolean.")
+    paper_metric_save_centerline_graphs = config.get(
+        "paper_metric_save_centerline_graphs", False
+    )
+    if not isinstance(paper_metric_save_centerline_graphs, bool):
+        raise ValueError("paper_metric_save_centerline_graphs must be boolean.")
 
     max_visualizations = 0
     if mode == "visualisation":
@@ -655,6 +665,9 @@ def resolve_evaluation_options(
             "max_visualizations_effective": max_visualizations,
             "prediction_threshold": threshold,
             "paper_metric_save_masks": paper_metric_save_masks,
+            "paper_metric_save_centerline_graphs": (
+                paper_metric_save_centerline_graphs
+            ),
             "compute_paper_metrics": compute_paper_metrics,
             "ssim_window_size": window_size,
             "ssim_chunk_depth": chunk_depth,
@@ -688,6 +701,9 @@ def resolve_evaluation_options(
         output_dtype=output_dtype,
         prediction_threshold=threshold,
         paper_metric_save_masks=paper_metric_save_masks,
+        paper_metric_save_centerline_graphs=(
+            paper_metric_save_centerline_graphs
+        ),
         ssim_window_size=window_size,
         ssim_chunk_depth=chunk_depth,
         ground_truth_origin_xyz_mm=_finite_three(
@@ -941,6 +957,13 @@ def _aligned_ground_truth(
     )
 
 
+def _graph_skeleton_mask(graph: VascularCenterlineGraph) -> np.ndarray:
+    skeleton = np.zeros(graph.source_shape_zyx, dtype=np.bool_)
+    if graph.node_index_zyx.size:
+        skeleton[tuple(graph.node_index_zyx.T)] = True
+    return skeleton
+
+
 def _paper_metric_case(
     prediction_zyx: np.ndarray,
     sample: Mapping[str, Any],
@@ -1012,6 +1035,26 @@ def _paper_metric_case(
         # Target centers are absolute/native; AutoCAR's grid is centered.
         target_to_source_offset_xyz_mm=-center_offset,
     )
+    graph_origin_xyz_mm = target_grid.origin_xyz_mm
+    graph_spacing_xyz_mm = target_grid.spacing_xyz_mm
+    predicted_graph = extract_centerline_graph(
+        predicted_mask,
+        threshold=0.5,
+        origin_xyz_mm=graph_origin_xyz_mm,
+        spacing_xyz_mm=graph_spacing_xyz_mm,
+    )
+    ground_truth_graph = extract_centerline_graph(
+        ground_truth_mask,
+        threshold=0.5,
+        origin_xyz_mm=graph_origin_xyz_mm,
+        spacing_xyz_mm=graph_spacing_xyz_mm,
+    )
+    cldice = hard_cldice_3d(
+        ground_truth_mask,
+        predicted_mask,
+        ground_truth_skeleton=_graph_skeleton_mask(ground_truth_graph),
+        prediction_skeleton=_graph_skeleton_mask(predicted_graph),
+    )
     metrics = compute_volume_metrics(
         ground_truth_mask,
         predicted_mask,
@@ -1039,6 +1082,24 @@ def _paper_metric_case(
             "paper_mask_dice_3d": metrics["masked_dice_3d"],
             "paper_mask_ssim_3d": metrics["ssim_3d"],
             "paper_mask_masked_ssim_3d": paper_masked_ssim,
+            "paper_mask_cldice_3d": cldice["cldice_3d"],
+            "paper_mask_cldice_loss_3d": cldice["cldice_loss_3d"],
+            "paper_mask_topology_precision": cldice["topology_precision"],
+            "paper_mask_topology_sensitivity": cldice[
+                "topology_sensitivity"
+            ],
+            "paper_mask_predicted_centerline_voxels": cldice[
+                "prediction_centerline_voxels"
+            ],
+            "paper_mask_ground_truth_centerline_voxels": cldice[
+                "ground_truth_centerline_voxels"
+            ],
+            "paper_mask_predicted_centerline_in_ground_truth_voxels": cldice[
+                "prediction_centerline_in_ground_truth_voxels"
+            ],
+            "paper_mask_ground_truth_centerline_in_prediction_voxels": cldice[
+                "ground_truth_centerline_in_prediction_voxels"
+            ],
             "paper_mask_intersection_voxels": metrics["intersection_voxels"],
             "paper_mask_predicted_foreground_voxels": metrics[
                 "prediction_foreground_voxels"
@@ -1058,7 +1119,10 @@ def _paper_metric_case(
         "target_shape_xyz": target_shape_xyz.astype(int).tolist(),
         "target_spacing_xyz_mm": target_spacing.astype(float).tolist(),
         "target_origin_xyz_mm": native_first_center.astype(float).tolist(),
+        "target_grid_origin_xyz_mm": list(graph_origin_xyz_mm),
         "projection_center_offset_xyz_mm": center_offset.astype(float).tolist(),
+        "predicted_centerline_graph": predicted_graph,
+        "ground_truth_centerline_graph": ground_truth_graph,
     }
 
 
@@ -1110,6 +1174,89 @@ def _save_paper_mask_artifact(
         paper_mask_ssim_3d=np.asarray(
             metrics["paper_mask_ssim_3d"], dtype=np.float64
         ),
+        paper_mask_cldice_3d=np.asarray(
+            metrics["paper_mask_cldice_3d"], dtype=np.float64
+        ),
+        paper_mask_cldice_loss_3d=np.asarray(
+            metrics["paper_mask_cldice_loss_3d"], dtype=np.float64
+        ),
+    )
+
+
+def _centerline_graph_fields(
+    prefix: str,
+    graph: VascularCenterlineGraph,
+) -> dict[str, np.ndarray]:
+    return {
+        f"{prefix}_node_index_zyx": graph.node_index_zyx,
+        f"{prefix}_node_xyz_mm": graph.node_xyz_mm,
+        f"{prefix}_node_radius_mm": graph.node_radius_mm,
+        f"{prefix}_edge_node_indices": graph.edge_node_indices,
+        f"{prefix}_node_degree": graph.node_degree,
+        f"{prefix}_node_kind": graph.node_kind,
+        f"{prefix}_component_id": graph.component_id,
+        f"{prefix}_foreground_voxels": np.asarray(
+            graph.foreground_voxels, dtype=np.int64
+        ),
+    }
+
+
+def _save_paper_centerline_graph_artifact(
+    path: Path,
+    result: Mapping[str, Any],
+    *,
+    case_id: str,
+    split: str,
+    eval_num_views: int,
+) -> None:
+    predicted_graph = result["predicted_centerline_graph"]
+    ground_truth_graph = result["ground_truth_centerline_graph"]
+    if not isinstance(predicted_graph, VascularCenterlineGraph) or not isinstance(
+        ground_truth_graph, VascularCenterlineGraph
+    ):
+        raise TypeError("paper-metric centerline graphs have an invalid type.")
+    metrics = result["metrics"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        representation=np.asarray("paired_voxel_skeleton_graphs"),
+        derivation=np.asarray("lee_morphological_thinning_26n_edt_radius"),
+        coordinate_frame=np.asarray("native_xyz_mm"),
+        node_index_axis_order=np.asarray("zyx"),
+        node_kind_labels=np.asarray(
+            ["isolated", "endpoint", "regular", "junction"]
+        ),
+        case_id=np.asarray(case_id),
+        split=np.asarray(split),
+        prediction_role=np.asarray("final"),
+        evaluation_num_views=np.asarray(eval_num_views, dtype=np.int64),
+        source_volume_shape_xyz=np.asarray(
+            result["source_volume_shape_xyz"], dtype=np.int32
+        ),
+        target_voxel_shape_xyz=np.asarray(
+            result["target_shape_xyz"], dtype=np.int32
+        ),
+        target_spacing_xyz_mm=np.asarray(
+            result["target_spacing_xyz_mm"], dtype=np.float64
+        ),
+        target_grid_origin_xyz_mm=np.asarray(
+            result["target_grid_origin_xyz_mm"], dtype=np.float64
+        ),
+        stored_projection_center_offset_xyz_mm=np.asarray(
+            result["projection_center_offset_xyz_mm"], dtype=np.float32
+        ),
+        cldice_3d=np.asarray(metrics["paper_mask_cldice_3d"], dtype=np.float64),
+        cldice_loss_3d=np.asarray(
+            metrics["paper_mask_cldice_loss_3d"], dtype=np.float64
+        ),
+        topology_precision=np.asarray(
+            metrics["paper_mask_topology_precision"], dtype=np.float64
+        ),
+        topology_sensitivity=np.asarray(
+            metrics["paper_mask_topology_sensitivity"], dtype=np.float64
+        ),
+        **_centerline_graph_fields("prediction", predicted_graph),
+        **_centerline_graph_fields("ground_truth", ground_truth_graph),
     )
 
 
@@ -1575,6 +1722,55 @@ def _paper_metric_summary(
         if masked_ssim_values
         else (None, None)
     )
+    cldice, cldice_se = _mean_standard_error(
+        [float(report["paper_mask_cldice_3d"]) for report in reports]
+    )
+    cldice_loss, cldice_loss_se = _mean_standard_error(
+        [float(report["paper_mask_cldice_loss_3d"]) for report in reports]
+    )
+    topology_precision, topology_precision_se = _mean_standard_error(
+        [float(report["paper_mask_topology_precision"]) for report in reports]
+    )
+    topology_sensitivity, topology_sensitivity_se = _mean_standard_error(
+        [float(report["paper_mask_topology_sensitivity"]) for report in reports]
+    )
+    predicted_centerline_count = sum(
+        int(report["paper_mask_predicted_centerline_voxels"])
+        for report in reports
+    )
+    ground_truth_centerline_count = sum(
+        int(report["paper_mask_ground_truth_centerline_voxels"])
+        for report in reports
+    )
+    predicted_centerline_in_ground_truth = sum(
+        int(report["paper_mask_predicted_centerline_in_ground_truth_voxels"])
+        for report in reports
+    )
+    ground_truth_centerline_in_prediction = sum(
+        int(report["paper_mask_ground_truth_centerline_in_prediction_voxels"])
+        for report in reports
+    )
+    micro_topology_precision = (
+        predicted_centerline_in_ground_truth / predicted_centerline_count
+        if predicted_centerline_count
+        else (1.0 if ground_truth_centerline_count == 0 else 0.0)
+    )
+    micro_topology_sensitivity = (
+        ground_truth_centerline_in_prediction / ground_truth_centerline_count
+        if ground_truth_centerline_count
+        else (1.0 if predicted_centerline_count == 0 else 0.0)
+    )
+    micro_cldice_denominator = (
+        micro_topology_precision + micro_topology_sensitivity
+    )
+    micro_cldice = (
+        0.0
+        if micro_cldice_denominator == 0.0
+        else 2.0
+        * micro_topology_precision
+        * micro_topology_sensitivity
+        / micro_cldice_denominator
+    )
     return {
         "protocol": protocol,
         "final_model_role": "final",
@@ -1591,6 +1787,19 @@ def _paper_metric_summary(
         "macro_masked_ssim_3d": masked_ssim[0],
         "macro_masked_ssim_3d_standard_error": masked_ssim[1],
         "macro_masked_ssim_3d_num_cases": len(masked_ssim_values),
+        "micro_cldice_3d": micro_cldice,
+        "micro_cldice_loss_3d": 1.0 - micro_cldice,
+        "micro_topology_precision": micro_topology_precision,
+        "micro_topology_sensitivity": micro_topology_sensitivity,
+        "macro_cldice_3d": cldice,
+        "macro_cldice_3d_standard_error": cldice_se,
+        "macro_cldice_loss_3d": cldice_loss,
+        "macro_cldice_loss_3d_standard_error": cldice_loss_se,
+        "macro_topology_precision": topology_precision,
+        "macro_topology_precision_standard_error": topology_precision_se,
+        "macro_topology_sensitivity": topology_sensitivity,
+        "macro_topology_sensitivity_standard_error": topology_sensitivity_se,
+        "macro_cldice_3d_num_cases": len(reports),
     }
 
 
@@ -1623,6 +1832,10 @@ def _role_summary(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "ssim_3d",
         "masked_ssim_3d",
         "paper_mask_dice_3d",
+        "paper_mask_cldice_3d",
+        "paper_mask_cldice_loss_3d",
+        "paper_mask_topology_precision",
+        "paper_mask_topology_sensitivity",
         "paper_mask_ssim_3d",
         "paper_mask_masked_ssim_3d",
     )
@@ -1654,10 +1867,16 @@ def _save_metric_histogram(reports: Sequence[Mapping[str, Any]], path: Path) -> 
     if reports and "paper_mask_dice_3d" in reports[0]:
         names = (
             "paper_mask_dice_3d",
+            "paper_mask_cldice_3d",
             "paper_mask_ssim_3d",
             "paper_mask_masked_ssim_3d",
         )
-        labels = ("Paper Dice", "Paper SSIM", "Paper vessel-window SSIM")
+        labels = (
+            "Paper Dice",
+            "Paper clDice",
+            "Paper SSIM",
+            "Paper vessel-window SSIM",
+        )
     else:
         names = ("masked_dice_3d", "ssim_3d", "masked_ssim_3d")
         labels = ("Masked Dice", "Global SSIM", "Vessel-window SSIM")
@@ -1729,6 +1948,14 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         "prediction_threshold": options.prediction_threshold,
         "ssim_protocol": "uniform_valid_window_sample_covariance",
         "ssim_window_size": options.ssim_window_size,
+        "cldice_protocol": {
+            "name": "hard_morphological_cldice_3d",
+            "skeletonization": "skimage_skeletonize_lee_3d",
+            "topology_precision": "sum(skeleton(prediction)*ground_truth)/sum(skeleton(prediction))",
+            "topology_sensitivity": "sum(skeleton(ground_truth)*prediction)/sum(skeleton(ground_truth))",
+            "score": "2*topology_precision*topology_sensitivity/(topology_precision+topology_sensitivity)",
+            "loss": "1-cldice_3d",
+        },
         "coordinate_convention": (
             "prediction_array_zyx; grid_coordinates_xyz_mm; native_ground_truth_"
             "array_xyz"
@@ -1858,6 +2085,23 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                         split=dataset_split,
                         eval_num_views=len(options.view_indices),
                     )
+                centerline_graph_path = None
+                if options.paper_metric_save_centerline_graphs:
+                    centerline_graph_path = (
+                        output_dir
+                        / "metrics"
+                        / "centerline_graphs"
+                        / "final"
+                        / dataset_split
+                        / f"case_{case_id}_{dataset_split}.npz"
+                    )
+                    _save_paper_centerline_graph_artifact(
+                        centerline_graph_path,
+                        paper_result,
+                        case_id=case_id,
+                        split=dataset_split,
+                        eval_num_views=len(options.view_indices),
+                    )
                 paper_record = {
                     "case_id": case_id,
                     "split": dataset_split,
@@ -1865,6 +2109,11 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                     "role": "final",
                     "is_final_model_role": True,
                     "mask_artifact": None if mask_path is None else str(mask_path),
+                    "centerline_graph_artifact": (
+                        None
+                        if centerline_graph_path is None
+                        else str(centerline_graph_path)
+                    ),
                     "prediction": str(prediction_path),
                     "projection": str(sample["projection_path"]),
                     "ground_truth": str(sample["voxel_path"]),
@@ -2104,6 +2353,31 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                     ],
                 },
             )
+            _write_json(
+                metrics_dir / "centerline_graphs" / "manifest.json",
+                {
+                    "format": "compressed_npz",
+                    "representation": "paired_voxel_skeleton_graphs",
+                    "coordinate_frame": "native_xyz_mm",
+                    "protocol": metric_protocol["cldice_protocol"],
+                    "saved": options.paper_metric_save_centerline_graphs,
+                    "num_files": sum(
+                        record["centerline_graph_artifact"] is not None
+                        for record in paper_metric_records
+                    ),
+                    "files": [
+                        {
+                            "case_id": record["case_id"],
+                            "split": record["split"],
+                            "eval_num_views": record["eval_num_views"],
+                            "role": record["role"],
+                            "path": record["centerline_graph_artifact"],
+                        }
+                        for record in paper_metric_records
+                        if record["centerline_graph_artifact"] is not None
+                    ],
+                },
+            )
 
     split_sha256 = hashlib.sha256(options.split_json.read_bytes()).hexdigest()
     evaluation_record = {
@@ -2170,6 +2444,12 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 "metrics/voxel_masks/final/<split>/case_<id>_<split>.npz"
                 if options.compute_paper_metrics
                 and options.paper_metric_save_masks
+                else None
+            ),
+            "paper_metric_centerline_graphs": (
+                "metrics/centerline_graphs/final/<split>/case_<id>_<split>.npz"
+                if options.compute_paper_metrics
+                and options.paper_metric_save_centerline_graphs
                 else None
             ),
             "performance_summary": "performance_summary.json",

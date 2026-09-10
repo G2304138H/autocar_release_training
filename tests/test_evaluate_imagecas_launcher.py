@@ -101,6 +101,7 @@ def test_both_artery_dry_run_writes_paper_metric_configs(tmp_path):
         assert config["evaluation_view_indices"] == [0, 6]
         assert config["case_id_mode"] == "imagecas_numeric"
         assert config["save_prediction_npz_files"] is True
+        assert config["paper_metric_save_centerline_graphs"] is True
     assert lca["expected_imager_pixel_spacing_mm"] == 0.65
     assert lca["fallback_imager_pixel_spacing_mm"] == 0.65
     assert lca["fallback_sid_mm"] == 900.0

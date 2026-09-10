@@ -3,10 +3,46 @@ import pytest
 
 from src.metrics import (
     compute_volume_metrics,
+    hard_cldice_3d,
     masked_dice_3d,
     masked_ssim_3d,
     structural_similarity_3d,
 )
+
+
+def test_hard_cldice_matches_paper_equation_and_reports_loss():
+    truth = np.zeros((5, 5, 5), dtype=bool)
+    prediction = np.zeros_like(truth)
+    truth_skeleton = np.zeros_like(truth)
+    prediction_skeleton = np.zeros_like(truth)
+    prediction_skeleton[1, 1, 1:4] = True
+    truth_skeleton[2, 2, 0:4] = True
+    prediction |= prediction_skeleton
+    prediction[2, 2, 0:2] = True
+    truth |= truth_skeleton
+    truth[1, 1, 1:3] = True
+
+    result = hard_cldice_3d(
+        truth,
+        prediction,
+        ground_truth_skeleton=truth_skeleton,
+        prediction_skeleton=prediction_skeleton,
+    )
+
+    assert result["topology_precision"] == pytest.approx(2.0 / 3.0)
+    assert result["topology_sensitivity"] == pytest.approx(1.0 / 2.0)
+    assert result["cldice_3d"] == pytest.approx(4.0 / 7.0)
+    assert result["cldice_loss_3d"] == pytest.approx(3.0 / 7.0)
+
+
+def test_hard_cldice_handles_empty_and_identical_volumes():
+    empty = np.zeros((5, 5, 5), dtype=bool)
+    vessel = empty.copy()
+    vessel[1:4, 2, 2] = True
+
+    assert hard_cldice_3d(empty, empty)["cldice_3d"] == 1.0
+    assert hard_cldice_3d(vessel, empty)["cldice_3d"] == 0.0
+    assert hard_cldice_3d(vessel, vessel)["cldice_loss_3d"] == 0.0
 
 
 def test_dice_identity_disjoint_and_exact_empty_cases():

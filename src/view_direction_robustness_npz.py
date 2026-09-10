@@ -266,7 +266,11 @@ def _validate_baseline(
     final = roles.get("final") if isinstance(roles, dict) else None
     if not isinstance(final, dict):
         raise ValueError(f"Accurate baseline has no final role metrics: {path}")
-    for metric in ("paper_mask_dice_3d", "paper_mask_ssim_3d"):
+    for metric in (
+        "paper_mask_dice_3d",
+        "paper_mask_cldice_3d",
+        "paper_mask_ssim_3d",
+    ):
         if metric not in final:
             raise ValueError(
                 f"Accurate baseline lacks {metric}; run paper_metric mode first."
@@ -694,7 +698,11 @@ def run_view_direction_robustness(
                 raise RuntimeError(
                     f"Condition {identifier} did not write {paper_metric_path}."
                 )
-            for metric in ("paper_mask_dice_3d", "paper_mask_ssim_3d"):
+            for metric in (
+                "paper_mask_dice_3d",
+                "paper_mask_cldice_3d",
+                "paper_mask_ssim_3d",
+            ):
                 if metric not in roles["final"]:
                     raise RuntimeError(
                         f"Condition {identifier} did not record {metric}."

@@ -17,6 +17,7 @@ from src.eval_npz import (
     _paper_metric_case,
     _paper_metric_summary,
     _processing_timing_summary,
+    _save_paper_centerline_graph_artifact,
     _save_prediction_npz,
     _selected_split_cases,
     build_parser,
@@ -199,6 +200,14 @@ def test_paper_summary_reports_macro_standard_error_and_micro_dice():
             "paper_mask_intersection_voxels": 2,
             "paper_mask_predicted_foreground_voxels": 4,
             "paper_mask_ground_truth_foreground_voxels": 4,
+            "paper_mask_cldice_3d": 0.5,
+            "paper_mask_cldice_loss_3d": 0.5,
+            "paper_mask_topology_precision": 0.5,
+            "paper_mask_topology_sensitivity": 0.5,
+            "paper_mask_predicted_centerline_voxels": 4,
+            "paper_mask_ground_truth_centerline_voxels": 6,
+            "paper_mask_predicted_centerline_in_ground_truth_voxels": 2,
+            "paper_mask_ground_truth_centerline_in_prediction_voxels": 3,
         },
         {
             "paper_mask_dice_3d": 1.0,
@@ -207,6 +216,14 @@ def test_paper_summary_reports_macro_standard_error_and_micro_dice():
             "paper_mask_intersection_voxels": 3,
             "paper_mask_predicted_foreground_voxels": 3,
             "paper_mask_ground_truth_foreground_voxels": 3,
+            "paper_mask_cldice_3d": 1.0,
+            "paper_mask_cldice_loss_3d": 0.0,
+            "paper_mask_topology_precision": 1.0,
+            "paper_mask_topology_sensitivity": 1.0,
+            "paper_mask_predicted_centerline_voxels": 3,
+            "paper_mask_ground_truth_centerline_voxels": 3,
+            "paper_mask_predicted_centerline_in_ground_truth_voxels": 3,
+            "paper_mask_ground_truth_centerline_in_prediction_voxels": 3,
         },
     ]
 
@@ -216,6 +233,9 @@ def test_paper_summary_reports_macro_standard_error_and_micro_dice():
     assert summary["macro_dice_3d"] == pytest.approx(0.75)
     assert summary["macro_dice_3d_standard_error"] == pytest.approx(0.25)
     assert summary["macro_masked_ssim_3d_num_cases"] == 1
+    assert summary["macro_cldice_3d"] == pytest.approx(0.75)
+    assert summary["macro_cldice_loss_3d"] == pytest.approx(0.25)
+    assert summary["micro_cldice_3d"] == pytest.approx(20.0 / 29.0)
 
 
 def test_processing_timing_summary_reports_combined_and_split_averages():
@@ -244,7 +264,10 @@ def test_processing_timing_summary_reports_combined_and_split_averages():
     assert summary["by_split"]["test"]["mean_processing_elapsed_ms"] == 50.0
 
 
-def test_paper_metric_case_uses_endpoint_aligned_native_fov(monkeypatch):
+def test_paper_metric_case_uses_endpoint_aligned_native_fov(
+    monkeypatch,
+    tmp_path,
+):
     monkeypatch.setattr(eval_npz, "_PAPER_METRIC_SHAPE_ZYX", (9, 9, 9))
     volume = np.zeros((9, 9, 9), dtype=np.uint8)
     volume[3:6, 3:6, 3:6] = 1
@@ -267,7 +290,25 @@ def test_paper_metric_case_uses_endpoint_aligned_native_fov(monkeypatch):
 
     assert result["metrics"]["paper_mask_dice_3d"] == 1.0
     assert result["metrics"]["paper_mask_ssim_3d"] == 1.0
+    assert result["metrics"]["paper_mask_cldice_3d"] == 1.0
+    assert result["metrics"]["paper_mask_cldice_loss_3d"] == 0.0
     np.testing.assert_array_equal(result["predicted_mask_zyx"], volume)
+    graph_path = tmp_path / "case_2_validation.npz"
+    _save_paper_centerline_graph_artifact(
+        graph_path,
+        result,
+        case_id="2",
+        split="validation",
+        eval_num_views=2,
+    )
+    with np.load(graph_path, allow_pickle=False) as payload:
+        assert payload["coordinate_frame"].item() == "native_xyz_mm"
+        assert payload["cldice_3d"].item() == 1.0
+        assert payload["prediction_node_radius_mm"].size > 0
+        np.testing.assert_array_equal(
+            payload["prediction_node_index_zyx"],
+            payload["ground_truth_node_index_zyx"],
+        )
 
 
 def test_cli_matches_parametric_evaluation_override_names():
@@ -423,6 +464,7 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
         output_dtype="float16",
         prediction_threshold=0.5,
         paper_metric_save_masks=True,
+        paper_metric_save_centerline_graphs=False,
         ssim_window_size=7,
         ssim_chunk_depth=2,
         ground_truth_origin_xyz_mm=None,

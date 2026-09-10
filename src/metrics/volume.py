@@ -1,10 +1,11 @@
 """Metrics for physically aligned three-dimensional vascular volumes.
 
-The functions are deliberately NumPy-only so validation can run without a
-CUDA environment.  Dice is evaluated only inside an optional valid-FOV mask.
-For SSIM, an ROI is stricter than a center-selection mask: only windows fully
-contained in the ROI are eligible, so values outside the physical field of
-view cannot leak into the result.
+The Dice and SSIM implementations are NumPy-only so validation can run without
+a CUDA environment. Hard clDice additionally uses scikit-image morphological
+thinning. Dice is evaluated only inside an optional valid-FOV mask. For SSIM,
+an ROI is stricter than a center-selection mask: only windows fully contained
+in the ROI are eligible, so values outside the physical field of view cannot
+leak into the result.
 """
 
 from __future__ import annotations
@@ -82,6 +83,95 @@ def masked_dice_3d(
         np.count_nonzero(truth_foreground & prediction_foreground)
     )
     return float(2.0 * intersection / denominator)
+
+
+def _morphological_skeleton_3d(mask: np.ndarray) -> np.ndarray:
+    try:
+        from skimage.morphology import skeletonize
+    except ModuleNotFoundError as error:
+        raise ModuleNotFoundError(
+            "Hard 3D clDice requires scikit-image for morphological thinning. "
+            "Install the maintained environment requirements before evaluation."
+        ) from error
+    padded = np.pad(np.asarray(mask, dtype=np.bool_), 1, mode="constant")
+    skeleton = skeletonize(padded, method="lee")
+    return np.asarray(skeleton[1:-1, 1:-1, 1:-1], dtype=np.bool_)
+
+
+def hard_cldice_3d(
+    ground_truth: np.ndarray,
+    prediction: np.ndarray,
+    *,
+    ground_truth_skeleton: Optional[np.ndarray] = None,
+    prediction_skeleton: Optional[np.ndarray] = None,
+) -> Dict[str, Union[float, int]]:
+    """Compute the hard morphological 3D clDice score and its loss.
+
+    This implements the definition from the AutoCAR paper: topology precision
+    is the fraction of the predicted skeleton inside the ground-truth mask,
+    topology sensitivity is the fraction of the ground-truth skeleton inside
+    the predicted mask, and clDice is their harmonic mean. Skeletons can be
+    supplied by graph extraction so evaluation does not thin either volume
+    twice. Empty/empty is scored as one and either one-empty case as zero.
+    """
+
+    ground_truth, prediction = _matching_volumes(ground_truth, prediction)
+    truth_mask = np.asarray(ground_truth >= 0.5, dtype=np.bool_)
+    prediction_mask = np.asarray(prediction >= 0.5, dtype=np.bool_)
+    truth_skeleton = (
+        _morphological_skeleton_3d(truth_mask)
+        if ground_truth_skeleton is None
+        else np.asarray(ground_truth_skeleton, dtype=np.bool_)
+    )
+    predicted_skeleton = (
+        _morphological_skeleton_3d(prediction_mask)
+        if prediction_skeleton is None
+        else np.asarray(prediction_skeleton, dtype=np.bool_)
+    )
+    for name, skeleton, mask in (
+        ("ground_truth_skeleton", truth_skeleton, truth_mask),
+        ("prediction_skeleton", predicted_skeleton, prediction_mask),
+    ):
+        if skeleton.shape != truth_mask.shape:
+            raise ValueError(
+                f"{name} shape {skeleton.shape} does not match {truth_mask.shape}."
+            )
+        if np.any(skeleton & ~mask):
+            raise ValueError(f"{name} contains voxels outside its vessel mask.")
+
+    predicted_count = int(np.count_nonzero(predicted_skeleton))
+    truth_count = int(np.count_nonzero(truth_skeleton))
+    predicted_in_truth = int(
+        np.count_nonzero(predicted_skeleton & truth_mask)
+    )
+    truth_in_prediction = int(
+        np.count_nonzero(truth_skeleton & prediction_mask)
+    )
+
+    if predicted_count:
+        topology_precision = predicted_in_truth / predicted_count
+    else:
+        topology_precision = 1.0 if not np.any(truth_mask) else 0.0
+    if truth_count:
+        topology_sensitivity = truth_in_prediction / truth_count
+    else:
+        topology_sensitivity = 1.0 if not np.any(prediction_mask) else 0.0
+    denominator = topology_precision + topology_sensitivity
+    score = (
+        0.0
+        if denominator == 0.0
+        else 2.0 * topology_precision * topology_sensitivity / denominator
+    )
+    return {
+        "cldice_3d": float(score),
+        "cldice_loss_3d": float(1.0 - score),
+        "topology_precision": float(topology_precision),
+        "topology_sensitivity": float(topology_sensitivity),
+        "prediction_centerline_voxels": predicted_count,
+        "ground_truth_centerline_voxels": truth_count,
+        "prediction_centerline_in_ground_truth_voxels": predicted_in_truth,
+        "ground_truth_centerline_in_prediction_voxels": truth_in_prediction,
+    }
 
 
 def _box_sum_valid(volume: np.ndarray, window_size: int) -> np.ndarray:

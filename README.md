@@ -12,6 +12,8 @@ Transferable 3D Dynamic Vascular Reconstruction For Instantaneous Diagnosis*.
 > radius-coloured surface from predicted occupancy. This post-processing is not
 > used by training or quantitative metrics; dynamic graph reconstruction remains
 > outside the reconstruction-comparison path.
+> Paper-metric evaluation separately derives aligned prediction and
+> ground-truth centerline-radius graphs for hard 3D clDice and clDice loss.
 
 The supplied cluster datasets have ready-to-run LCA/RCA configurations and a
 preflight launcher:

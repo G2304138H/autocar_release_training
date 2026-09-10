@@ -33,6 +33,7 @@
   "paper_metric_volume_threshold": 0.5,
   "paper_metric_ssim_window_size": 7,
   "paper_metric_save_masks": true,
+  "paper_metric_save_centerline_graphs": true,
   "ssim_chunk_depth": 8,
   "ground_truth_origin_xyz_mm": null,
   "source_to_isocenter_mm": 750.0,

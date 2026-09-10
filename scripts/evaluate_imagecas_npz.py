@@ -161,6 +161,14 @@ def _parser() -> argparse.ArgumentParser:
         help="Compute paper metrics without retaining the 128^3 comparison masks.",
     )
     parser.add_argument(
+        "--no-centerline-graph-files",
+        action="store_true",
+        help=(
+            "Compute clDice without retaining the paired centerline graph/radius "
+            "NPZ files."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help=(
@@ -416,6 +424,9 @@ def _evaluation_config(
         "paper_metric_volume_threshold": 0.5,
         "paper_metric_ssim_window_size": 7,
         "paper_metric_save_masks": not args.no_paper_mask_files,
+        "paper_metric_save_centerline_graphs": (
+            not args.no_centerline_graph_files
+        ),
         "ssim_chunk_depth": 8,
         "ground_truth_origin_xyz_mm": None,
         "overwrite": args.overwrite,
@@ -633,6 +644,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"processing={float(timing['mean_processing_elapsed_ms']):.3f} ms, "
             f"model_forward={float(timing['mean_inference_elapsed_ms']):.3f} ms "
             f"(n={int(timing['num_cases'])})"
+        )
+        paper_metric = artery_summary["paper_metric"]
+        print(
+            f"{artery.upper()} clDice: "
+            f"macro={float(paper_metric['macro_cldice_3d']):.6f}, "
+            f"loss={float(paper_metric['macro_cldice_loss_3d']):.6f}, "
+            f"micro={float(paper_metric['micro_cldice_3d']):.6f}"
         )
     print(
         "Completed paper-metric evaluation: "

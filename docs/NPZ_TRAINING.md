@@ -631,13 +631,24 @@ prediction manifest, synchronized model-forward timing, `performance_*` JSON
 files, a resolved configuration, and an audited evaluation record.
 
 `evaluation_mode: "paper_metric"` writes per-case JSON/CSV, aggregate macro
-mean/standard-error and micro Dice summaries, and a split comparison chart
-under `metrics/`. As in the parametric evaluator, it resamples native GT and
-the thresholded prediction onto an endpoint-aligned `128 x 128 x 128` grid
-covering the full native CT field of view. The comparison masks are saved under
-`metrics/voxel_masks/` when `paper_metric_save_masks` is true. The original
-full-resolution AutoCAR probability grid is always retained under
-`predictions/`. `evaluation_mode: "visualisation"` writes an input-view panel,
+mean/standard-error, micro Dice, and hard morphological 3D clDice summaries,
+and a split comparison chart under `metrics/`. As in the parametric evaluator,
+it resamples native GT and the thresholded prediction onto an endpoint-aligned
+`128 x 128 x 128` grid covering the full native CT field of view. That same
+offset-corrected grid is morphologically thinned for clDice. The output records
+topology precision, topology sensitivity, clDice score, and `1 - clDice` loss.
+
+The comparison masks are saved under `metrics/voxel_masks/` when
+`paper_metric_save_masks` is true. When
+`paper_metric_save_centerline_graphs` is true, each case additionally writes a
+paired prediction/ground-truth NPZ under `metrics/centerline_graphs/`. It stores
+26-connected skeleton nodes and edges, node types and components, native-frame
+XYZ coordinates, and EDT radii in millimetres. The full launcher enables these
+artifacts by default; `--no-centerline-graph-files` retains clDice results
+without saving the graphs. The original full-resolution AutoCAR probability
+grid is always retained under `predictions/`.
+
+`evaluation_mode: "visualisation"` writes an input-view panel,
 orthogonal probability/GT overlays, an optional rotating 3D GIF, case metrics,
 and an artifact manifest under
 `visualization/<case_id>/<split>/final/`. Use `max_visualizations` to cap these
@@ -682,8 +693,9 @@ validated against the expected artery spacing.
 Paper-metric evaluation records two timings for every case. The synchronized
 `inference_elapsed_ms` measures only the model forward pass, while
 `processing_elapsed_ms` starts before the case is loaded and ends after the
-prediction NPZ, physical metrics, and paper-mask artifact are written. It
-excludes visualization and cross-case aggregation. Per-case values are saved
+prediction NPZ, physical metrics, paper-mask artifact, and optional paired
+centerline graph/radius artifact are written. It excludes visualization and
+cross-case aggregation. Per-case values are saved
 to `timings/processing/per_case.csv`; combined and validation/test-specific
 means and standard errors are written to `timings/processing/summary.json` and
 embedded in `performance_summary.json`, `metrics/paper_metric_summary.json`,
@@ -822,8 +834,8 @@ CPU tests must establish:
 - exhaustive chunked voxel enumeration, nearest-EDT membership, bilinear
   feature sampling, two-view intersection, and the legacy ray path;
 - identity and deliberately shifted physical-volume alignment;
-- exact Dice examples, empty-volume behaviour, mask semantics, SSIM symmetry,
-  and chunked-versus-reference SSIM agreement;
+- exact Dice and clDice examples, empty-volume behaviour, mask semantics, SSIM
+  symmetry, and chunked-versus-reference SSIM agreement;
 - a model forward pass and gradient flow to the 2D features.
 
 GPU acceptance requires:
