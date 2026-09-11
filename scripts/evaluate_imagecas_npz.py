@@ -23,9 +23,11 @@ from typing import Any, Mapping, Sequence
 ROOT = Path(__file__).resolve().parents[1]
 
 
-# These values intentionally match configs/data/stage2_npz_{lca,rca}.yaml and
-# scripts/train_imagecas_npz.py.  The fallbacks are required only for older
-# projection files that omit detector spacing and SID metadata.
+# Dataset paths and geometry fallbacks intentionally match
+# configs/data/stage2_npz_{lca,rca}.yaml and scripts/train_imagecas_npz.py.
+# Standalone evaluation deliberately uses source slots [0, 1], independently
+# of the training-time validation pair. The fallbacks are required only for
+# older projection files that omit detector spacing and SID metadata.
 DATASETS: Mapping[str, Mapping[str, Any]] = {
     "lca": {
         "training_config": ROOT / "configs" / "experiment" / "stage2_npz_lca.yaml",
@@ -43,8 +45,8 @@ DATASETS: Mapping[str, Mapping[str, Any]] = {
         "fallback_imager_pixel_spacing_mm": 0.65,
         "fallback_sid_mm": 900.0,
         "source_to_isocenter_mm": 750.0,
-        "evaluation_view_indices": (0, 6),
-        "evaluation_view_labels": ("RAO 25, CAU 35", "LAO 5, CRA 40"),
+        "evaluation_view_indices": (0, 1),
+        "evaluation_view_labels": ("RAO 25, CAU 35", "LAO 5, CAU 30"),
     },
     "rca": {
         "training_config": ROOT / "configs" / "experiment" / "stage2_npz_rca.yaml",
@@ -62,7 +64,7 @@ DATASETS: Mapping[str, Mapping[str, Any]] = {
         "fallback_imager_pixel_spacing_mm": 0.55,
         "fallback_sid_mm": 900.0,
         "source_to_isocenter_mm": 750.0,
-        "evaluation_view_indices": (0, 6),
+        "evaluation_view_indices": (0, 1),
         "evaluation_view_labels": None,
     },
 }

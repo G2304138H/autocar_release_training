@@ -50,7 +50,7 @@ def test_both_artery_dry_run_writes_24_condition_configs(tmp_path):
         robustness = config["view_direction_robustness"]
         assert config["evaluation_mode"] == "inaccurate_view_direction"
         assert config["eval_split"] == "val_test"
-        assert config["evaluation_view_indices"] == [0, 6]
+        assert config["evaluation_view_indices"] == [0, 1]
         assert robustness["axis_degrees"] == [2.0, 5.0, 10.0, 15.0]
         assert robustness["combined_degrees"] == [5.0, 10.0]
         assert len(robustness["visualization_conditions_deg"]) == 8
@@ -97,4 +97,3 @@ def test_custom_small_grid_filters_representative_visualizations(tmp_path):
     assert plan.config["view_direction_robustness"][
         "visualization_conditions_deg"
     ] == []
-

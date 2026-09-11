@@ -677,8 +677,11 @@ remain available when outputs were moved. Use `--dry-run` to validate both
 checkpoints and all data paths and write the resolved evaluation configs
 without loading either model.
 
-Each artery runs in a separate process on the fixed views `[0, 6]` with
+Each artery runs in a separate process on the fixed source views `[0, 1]` with
 `evaluation_mode: "paper_metric"`, `eval_split: "val_test"`, and all cases.
+For the supplied LCA view bank these are `RAO 25, CAU 35` and
+`LAO 5, CAU 30`. This standalone paper-metric protocol is intentionally
+separate from the maintained training-time validation pair `[0, 6]`.
 By default each result is written back into its training experiment as
 `<training_run>/evaluation_paper_metric/<checkpoint_name>/`, matching the
 parametric evaluator. The generated config and plan sit in the run's

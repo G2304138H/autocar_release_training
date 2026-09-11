@@ -10,7 +10,7 @@ from scripts import visualize_imagecas_npz_case as launcher
 @pytest.mark.parametrize(
     ("artery", "spacing", "labels"),
     [
-        ("lca", 0.65, ["RAO 25, CAU 35", "LAO 5, CRA 40"]),
+        ("lca", 0.65, ["RAO 25, CAU 35", "LAO 5, CAU 30"]),
         ("rca", 0.55, None),
     ],
 )
@@ -71,7 +71,7 @@ def test_single_case_dry_run_uses_artery_training_run(
     assert config["eval_split"] == "val_test"
     assert config["eval_case_ids"] == ["17"]
     assert config["max_visualizations"] == 1
-    assert config["evaluation_view_indices"] == [0, 6]
+    assert config["evaluation_view_indices"] == [0, 1]
     assert config["evaluation_view_labels"] == labels
     assert config["expected_imager_pixel_spacing_mm"] == spacing
     assert config["fallback_imager_pixel_spacing_mm"] == spacing

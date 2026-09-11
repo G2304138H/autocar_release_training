@@ -447,7 +447,7 @@ def resolve_evaluation_options(
         ),
     )
 
-    raw_view_indices = config.get("evaluation_view_indices", (0, 6))
+    raw_view_indices = config.get("evaluation_view_indices", (0, 1))
     if not isinstance(raw_view_indices, (list, tuple)):
         raise ValueError("evaluation_view_indices must contain exactly two integers.")
     view_indices = tuple(
@@ -477,7 +477,7 @@ def resolve_evaluation_options(
         )
     raw_view_labels = config.get(
         "evaluation_view_labels",
-        ("RAO 25, CAU 35", "LAO 5, CRA 40"),
+        ("RAO 25, CAU 35", "LAO 5, CAU 30"),
     )
     view_labels: tuple[str, str] | None
     if raw_view_labels is None:

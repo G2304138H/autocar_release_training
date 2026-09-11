@@ -98,7 +98,7 @@ def test_both_artery_dry_run_writes_paper_metric_configs(tmp_path):
         assert config["evaluation_mode"] == "paper_metric"
         assert config["eval_split"] == "val_test"
         assert config["num_eval_cases"] == "all"
-        assert config["evaluation_view_indices"] == [0, 6]
+        assert config["evaluation_view_indices"] == [0, 1]
         assert config["case_id_mode"] == "imagecas_numeric"
         assert config["save_prediction_npz_files"] is True
         assert config["paper_metric_save_centerline_graphs"] is True
@@ -107,7 +107,7 @@ def test_both_artery_dry_run_writes_paper_metric_configs(tmp_path):
     assert lca["fallback_sid_mm"] == 900.0
     assert lca["evaluation_view_labels"] == [
         "RAO 25, CAU 35",
-        "LAO 5, CRA 40",
+        "LAO 5, CAU 30",
     ]
     assert rca["expected_imager_pixel_spacing_mm"] == 0.55
     assert rca["fallback_imager_pixel_spacing_mm"] == 0.55
