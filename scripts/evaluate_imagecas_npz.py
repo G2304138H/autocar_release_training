@@ -655,6 +655,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"micro={float(paper_metric['micro_cldice_3d']):.6f}"
         )
         centerline_error = paper_metric.get("macro_centerline_mean_error_mm")
+        chamfer_distance = paper_metric.get(
+            "macro_centerline_chamfer_distance_mm"
+        )
         radius_mae = paper_metric.get("macro_radius_mae_mm")
         centerline_text = (
             "undefined"
@@ -666,9 +669,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             if radius_mae is None
             else f"{float(radius_mae):.6f} mm"
         )
+        chamfer_text = (
+            "undefined"
+            if chamfer_distance is None
+            else f"{float(chamfer_distance):.6f} mm"
+        )
         print(
             f"{artery.upper()} graph errors: "
             f"centerline_mean={centerline_text}, "
+            f"centerline_chamfer={chamfer_text}, "
             f"radius_mae={radius_text} "
             f"(valid cases={int(paper_metric.get('graph_error_num_valid_cases', 0))})"
         )

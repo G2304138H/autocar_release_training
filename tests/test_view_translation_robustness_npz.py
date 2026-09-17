@@ -40,6 +40,7 @@ def test_single_translation_condition_compares_cldice_to_control(
                 "paper_mask_dice_3d": 0.8,
                 "paper_mask_cldice_3d": 0.75,
                 "paper_mask_ssim_3d": 0.7,
+                "paper_graph_centerline_chamfer_distance_mm": 2.0,
             }
         },
         "timing": {"mean_processing_elapsed_ms": 20.0},
@@ -98,6 +99,7 @@ def test_single_translation_condition_compares_cldice_to_control(
                     "paper_mask_dice_3d": 0.7,
                     "paper_mask_cldice_3d": 0.6,
                     "paper_mask_ssim_3d": 0.6,
+                    "paper_graph_centerline_chamfer_distance_mm": 3.5,
                 }
             },
             "timing": {"mean_processing_elapsed_ms": 25.0},
@@ -130,6 +132,9 @@ def test_single_translation_condition_compares_cldice_to_control(
     assert result["comparison_to_accurate"]["final"][
         "paper_mask_cldice_3d"
     ]["signed_change"] == pytest.approx(-0.15)
+    assert result["comparison_to_accurate"]["final"][
+        "paper_graph_centerline_chamfer_distance_mm"
+    ]["signed_change"] == pytest.approx(1.5)
     assert result["coarse_metrics"] is None
     assert (output_dir / "view_translation_robustness_metrics.csv").is_file()
     assert (output_dir / "view_translation_robustness_timing.csv").is_file()

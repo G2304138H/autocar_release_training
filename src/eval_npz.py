@@ -1173,6 +1173,9 @@ def _paper_metric_case(
             "paper_graph_centerline_mean_error_mm": graph_errors[
                 "centerline_mean_error_mm"
             ],
+            "paper_graph_centerline_chamfer_distance_mm": graph_errors[
+                "centerline_chamfer_distance_mm"
+            ],
             "paper_graph_radius_pred_to_gt_mae_mm": graph_errors[
                 "radius_pred_to_gt_mae_mm"
             ],
@@ -1354,6 +1357,13 @@ def _save_paper_centerline_graph_artifact(
         ),
         centerline_mean_error_mm=optional_float(
             "paper_graph_centerline_mean_error_mm"
+        ),
+        centerline_chamfer_distance_mm=optional_float(
+            "paper_graph_centerline_chamfer_distance_mm"
+        ),
+        centerline_chamfer_distance_definition=np.asarray(
+            "mean_pred_to_gt_nearest_distance+"
+            "mean_gt_to_pred_nearest_distance"
         ),
         radius_pred_to_gt_mae_mm=optional_float(
             "paper_graph_radius_pred_to_gt_mae_mm"
@@ -1906,6 +1916,9 @@ def _paper_metric_summary(
             "paper_graph_centerline_gt_to_pred_mean_error_mm"
         ),
         "centerline_mean_error_mm": "paper_graph_centerline_mean_error_mm",
+        "centerline_chamfer_distance_mm": (
+            "paper_graph_centerline_chamfer_distance_mm"
+        ),
         "radius_pred_to_gt_mae_mm": "paper_graph_radius_pred_to_gt_mae_mm",
         "radius_gt_to_pred_mae_mm": "paper_graph_radius_gt_to_pred_mae_mm",
         "radius_mae_mm": "paper_graph_radius_mae_mm",
@@ -1993,6 +2006,7 @@ def _role_summary(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "paper_graph_centerline_pred_to_gt_mean_error_mm",
         "paper_graph_centerline_gt_to_pred_mean_error_mm",
         "paper_graph_centerline_mean_error_mm",
+        "paper_graph_centerline_chamfer_distance_mm",
         "paper_graph_radius_pred_to_gt_mae_mm",
         "paper_graph_radius_gt_to_pred_mae_mm",
         "paper_graph_radius_mae_mm",
@@ -2106,6 +2120,9 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         "prediction_threshold": options.prediction_threshold,
         "ssim_protocol": "uniform_valid_window_sample_covariance",
         "ssim_window_size": options.ssim_window_size,
+        "centerline_chamfer_protocol": (
+            "sum_of_bidirectional_mean_nearest_neighbor_l2_distances_mm"
+        ),
         "cldice_protocol": {
             "name": "hard_morphological_cldice_3d",
             "skeletonization": "skimage_skeletonize_lee_3d",
@@ -2123,6 +2140,12 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             "correspondence": "bidirectional_nearest_centerline_node",
             "centerline_mean_error": (
                 "0.5*(mean_pred_to_gt_distance+mean_gt_to_pred_distance)"
+            ),
+            "centerline_chamfer_distance": (
+                "mean_pred_to_gt_distance+mean_gt_to_pred_distance"
+            ),
+            "chamfer_distance_convention": (
+                "unhalved_bidirectional_mean_nearest_neighbour_distance"
             ),
             "radius_mae": (
                 "0.5*(mean_pred_to_gt_radius_abs_error+"
@@ -2630,6 +2653,9 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                     "representation": "paired_voxel_skeleton_graphs",
                     "coordinate_frame": "native_xyz_mm",
                     "protocol": metric_protocol["cldice_protocol"],
+                    "centerline_radius_error_protocol": metric_protocol[
+                        "centerline_radius_error_protocol"
+                    ],
                     "saved": options.paper_metric_save_centerline_graphs,
                     "num_files": sum(
                         record["centerline_graph_artifact"] is not None

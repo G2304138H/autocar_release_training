@@ -217,6 +217,7 @@ def test_paper_summary_reports_macro_standard_error_and_micro_dice():
             "paper_graph_centerline_pred_to_gt_mean_error_mm": 1.0,
             "paper_graph_centerline_gt_to_pred_mean_error_mm": 2.0,
             "paper_graph_centerline_mean_error_mm": 1.5,
+            "paper_graph_centerline_chamfer_distance_mm": 3.0,
             "paper_graph_radius_pred_to_gt_mae_mm": 0.2,
             "paper_graph_radius_gt_to_pred_mae_mm": 0.4,
             "paper_graph_radius_mae_mm": 0.3,
@@ -240,6 +241,7 @@ def test_paper_summary_reports_macro_standard_error_and_micro_dice():
             "paper_graph_centerline_pred_to_gt_mean_error_mm": 2.0,
             "paper_graph_centerline_gt_to_pred_mean_error_mm": 4.0,
             "paper_graph_centerline_mean_error_mm": 3.0,
+            "paper_graph_centerline_chamfer_distance_mm": 6.0,
             "paper_graph_radius_pred_to_gt_mae_mm": 0.4,
             "paper_graph_radius_gt_to_pred_mae_mm": 0.8,
             "paper_graph_radius_mae_mm": 0.6,
@@ -256,6 +258,7 @@ def test_paper_summary_reports_macro_standard_error_and_micro_dice():
     assert summary["macro_cldice_loss_3d"] == pytest.approx(0.25)
     assert summary["micro_cldice_3d"] == pytest.approx(20.0 / 29.0)
     assert summary["macro_centerline_mean_error_mm"] == pytest.approx(2.25)
+    assert summary["macro_centerline_chamfer_distance_mm"] == pytest.approx(4.5)
     assert summary["macro_radius_mae_mm"] == pytest.approx(0.45)
     assert summary["graph_error_num_valid_cases"] == 2
     assert summary["graph_error_num_invalid_cases"] == 0
@@ -316,6 +319,9 @@ def test_paper_metric_case_uses_endpoint_aligned_native_fov(
     assert result["metrics"]["paper_mask_cldice_3d"] == 1.0
     assert result["metrics"]["paper_mask_cldice_loss_3d"] == 0.0
     assert result["metrics"]["paper_graph_centerline_mean_error_mm"] == 0.0
+    assert (
+        result["metrics"]["paper_graph_centerline_chamfer_distance_mm"] == 0.0
+    )
     assert result["metrics"]["paper_graph_radius_mae_mm"] == 0.0
     np.testing.assert_array_equal(result["predicted_mask_zyx"], volume)
     graph_path = tmp_path / "case_2_validation.npz"
@@ -330,6 +336,12 @@ def test_paper_metric_case_uses_endpoint_aligned_native_fov(
         assert payload["coordinate_frame"].item() == "native_xyz_mm"
         assert payload["cldice_3d"].item() == 1.0
         assert payload["centerline_mean_error_mm"].item() == 0.0
+        assert payload["centerline_chamfer_distance_mm"].item() == 0.0
+        assert (
+            payload["centerline_chamfer_distance_definition"].item()
+            == "mean_pred_to_gt_nearest_distance+"
+            "mean_gt_to_pred_nearest_distance"
+        )
         assert payload["radius_mae_mm"].item() == 0.0
         assert payload["prediction_node_radius_mm"].size > 0
         np.testing.assert_array_equal(

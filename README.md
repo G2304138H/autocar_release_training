@@ -14,7 +14,7 @@ Transferable 3D Dynamic Vascular Reconstruction For Instantaneous Diagnosis*.
 > outside the reconstruction-comparison path.
 > Paper-metric evaluation separately derives aligned prediction and
 > ground-truth centerline-radius graphs for hard 3D clDice, symmetric
-> centerline mean error, and radius MAE.
+> centerline mean error, unhalved set-to-set Chamfer distance, and radius MAE.
 
 The supplied cluster datasets have ready-to-run LCA/RCA configurations and a
 preflight launcher:
@@ -34,7 +34,8 @@ python scripts/evaluate_imagecas_npz_view_translation_robustness.py
 It keeps both camera angles and matrices unchanged, re-renders only the second
 input at Y/XZ/XYZ translations of 5, 10, and 20 mm total displacement, verifies
 a zero-shift rendering control, and reports Dice, clDice, visibility, timing,
-centreline error, radius MAE, and changes from the accurate control.
+centreline error, Chamfer distance, radius MAE, and changes from the accurate
+control.
 <!-- | [Static 3D Viewer](https://zhuyh19-autocar-synthetic-data-preview.static.hf.space) | [Dynamic 3D Viewer](https://autocar.zyh.science/dynamic_full.html) 
 <video height="512" controls autoplay>
     <source src="teaser.mp4" type="video/mp4" >

@@ -35,10 +35,11 @@ def centerline_radius_errors(
 
     Each source point is paired with its nearest point in the other graph. The
     primary centerline error is the arithmetic mean of the prediction-to-GT
-    and GT-to-prediction mean distances (symmetric mean Chamfer distance). The
-    primary radius MAE uses the same spatial correspondences and symmetric
-    averaging. Directional values are retained to expose missing branches and
-    spurious branches separately.
+    and GT-to-prediction mean distances. ``centerline_chamfer_distance_mm``
+    follows the unhalved Chamfer-distance convention and is therefore the sum
+    of those two directional means. The primary radius MAE uses the same
+    spatial correspondences and symmetric averaging. Directional values are
+    retained to expose missing branches and spurious branches separately.
 
     Errors are undefined when either graph is empty. In that case the function
     returns ``None`` for every error and records both node counts so aggregate
@@ -64,6 +65,7 @@ def centerline_radius_errors(
         "centerline_pred_to_gt_mean_error_mm": None,
         "centerline_gt_to_pred_mean_error_mm": None,
         "centerline_mean_error_mm": None,
+        "centerline_chamfer_distance_mm": None,
         "radius_pred_to_gt_mae_mm": None,
         "radius_gt_to_pred_mae_mm": None,
         "radius_mae_mm": None,
@@ -108,6 +110,9 @@ def centerline_radius_errors(
             "centerline_gt_to_pred_mean_error_mm": centerline_gt_to_pred,
             "centerline_mean_error_mm": 0.5
             * (centerline_pred_to_gt + centerline_gt_to_pred),
+            "centerline_chamfer_distance_mm": (
+                centerline_pred_to_gt + centerline_gt_to_pred
+            ),
             "radius_pred_to_gt_mae_mm": radius_pred_to_gt,
             "radius_gt_to_pred_mae_mm": radius_gt_to_pred,
             "radius_mae_mm": 0.5 * (radius_pred_to_gt + radius_gt_to_pred),

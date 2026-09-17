@@ -56,6 +56,7 @@ def test_single_condition_run_compares_to_accurate_baseline(monkeypatch, tmp_pat
                 "paper_mask_dice_3d": 0.8,
                 "paper_mask_cldice_3d": 0.75,
                 "paper_mask_ssim_3d": 0.7,
+                "paper_graph_centerline_chamfer_distance_mm": 2.0,
             }
         },
         "timing": {"mean_processing_elapsed_ms": 20.0},
@@ -102,6 +103,7 @@ def test_single_condition_run_compares_to_accurate_baseline(monkeypatch, tmp_pat
                     "paper_mask_dice_3d": 0.7,
                     "paper_mask_cldice_3d": 0.6,
                     "paper_mask_ssim_3d": 0.6,
+                    "paper_graph_centerline_chamfer_distance_mm": 3.5,
                 }
             },
             "timing": {"mean_processing_elapsed_ms": 25.0},
@@ -139,6 +141,9 @@ def test_single_condition_run_compares_to_accurate_baseline(monkeypatch, tmp_pat
     assert comparison["paper_mask_cldice_3d"]["signed_change"] == pytest.approx(
         -0.15
     )
+    assert comparison["paper_graph_centerline_chamfer_distance_mm"][
+        "signed_change"
+    ] == pytest.approx(1.5)
     assert (output_dir / "view_direction_robustness_metrics.csv").is_file()
     assert (output_dir / "view_direction_robustness_timing.csv").is_file()
 

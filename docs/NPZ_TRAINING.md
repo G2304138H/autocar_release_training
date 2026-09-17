@@ -642,6 +642,16 @@ skeleton node. Because independently thinned graphs do not have paired node
 indices or branch order, spatial correspondence is bidirectional nearest
 neighbour in native XYZ millimetres. `centerline_mean_error_mm` is the average
 of the prediction-to-GT and GT-to-prediction mean node distances;
+`centerline_chamfer_distance_mm` follows the unhalved set-to-set equation and
+is the sum of those two directional means. It does not require point indices,
+branch ordering, or one-to-one correspondence. Consequently, with the same
+node sets it is exactly twice `centerline_mean_error_mm`:
+
+`CD = mean_(p in pred) min_(q in GT) ||p-q||_2 + mean_(q in GT) min_(p in pred) ||p-q||_2`.
+
+This is the same unhalved centreline-Chamfer convention used by the parametric
+paper-metric evaluator.
+
 `radius_mae_mm` is the corresponding symmetric mean absolute radius error.
 Both directional terms, macro means, standard errors, and valid/invalid case
 counts are retained. An empty graph has undefined (`null`) errors and is
@@ -652,8 +662,9 @@ The comparison masks are saved under `metrics/voxel_masks/` when
 `paper_metric_save_centerline_graphs` is true, each case additionally writes a
 paired prediction/ground-truth NPZ under `metrics/centerline_graphs/`. It stores
 26-connected skeleton nodes and edges, node types and components, native-frame
-XYZ coordinates, EDT radii, and the directional/symmetric centerline and radius
-errors in millimetres. The full launcher enables these artifacts by default;
+XYZ coordinates, EDT radii, Chamfer distance, and the directional/symmetric
+centerline and radius errors in millimetres. The full launcher enables these
+artifacts by default;
 `--no-centerline-graph-files` retains clDice and graph-error results without
 saving the graphs. The original full-resolution AutoCAR probability grid is
 always retained under `predictions/`.
@@ -763,8 +774,9 @@ make detector clipping at 20 mm auditable.
 
 Every condition runs the ordinary AutoCAR network against the unchanged
 canonical target and records the complete paper-metric set, including hard 3D
-clDice, centreline mean error, radius MAE, timing, and changes from the accurate
-control. AutoCAR exposes one supervised final reconstruction volume; its
+clDice, centreline mean error, Chamfer distance, radius MAE, timing, and changes
+from the accurate control. AutoCAR exposes one supervised final reconstruction
+volume; its
 ray-casting tensor is an internal feature representation, so a separate coarse
 metric and refined-minus-coarse effect are explicitly reported as not
 applicable rather than fabricated.
