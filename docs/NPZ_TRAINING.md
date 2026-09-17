@@ -637,16 +637,26 @@ it resamples native GT and the thresholded prediction onto an endpoint-aligned
 `128 x 128 x 128` grid covering the full native CT field of view. That same
 offset-corrected grid is morphologically thinned for clDice. The output records
 topology precision, topology sensitivity, clDice score, and `1 - clDice` loss.
+It also estimates a physical EDT radius at every predicted and ground-truth
+skeleton node. Because independently thinned graphs do not have paired node
+indices or branch order, spatial correspondence is bidirectional nearest
+neighbour in native XYZ millimetres. `centerline_mean_error_mm` is the average
+of the prediction-to-GT and GT-to-prediction mean node distances;
+`radius_mae_mm` is the corresponding symmetric mean absolute radius error.
+Both directional terms, macro means, standard errors, and valid/invalid case
+counts are retained. An empty graph has undefined (`null`) errors and is
+explicitly counted rather than treated as a zero-error case.
 
 The comparison masks are saved under `metrics/voxel_masks/` when
 `paper_metric_save_masks` is true. When
 `paper_metric_save_centerline_graphs` is true, each case additionally writes a
 paired prediction/ground-truth NPZ under `metrics/centerline_graphs/`. It stores
 26-connected skeleton nodes and edges, node types and components, native-frame
-XYZ coordinates, and EDT radii in millimetres. The full launcher enables these
-artifacts by default; `--no-centerline-graph-files` retains clDice results
-without saving the graphs. The original full-resolution AutoCAR probability
-grid is always retained under `predictions/`.
+XYZ coordinates, EDT radii, and the directional/symmetric centerline and radius
+errors in millimetres. The full launcher enables these artifacts by default;
+`--no-centerline-graph-files` retains clDice and graph-error results without
+saving the graphs. The original full-resolution AutoCAR probability grid is
+always retained under `predictions/`.
 
 `evaluation_mode: "visualisation"` writes an input-view panel,
 orthogonal probability/GT overlays, an optional rotating 3D GIF, case metrics,
@@ -837,8 +847,9 @@ CPU tests must establish:
 - exhaustive chunked voxel enumeration, nearest-EDT membership, bilinear
   feature sampling, two-view intersection, and the legacy ray path;
 - identity and deliberately shifted physical-volume alignment;
-- exact Dice and clDice examples, empty-volume behaviour, mask semantics, SSIM
-  symmetry, and chunked-versus-reference SSIM agreement;
+- exact Dice and clDice examples, symmetric centerline/radius correspondence,
+  empty-volume behaviour, mask semantics, SSIM symmetry, and
+  chunked-versus-reference SSIM agreement;
 - a model forward pass and gradient flow to the 2D features.
 
 GPU acceptance requires:

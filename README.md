@@ -13,7 +13,8 @@ Transferable 3D Dynamic Vascular Reconstruction For Instantaneous Diagnosis*.
 > used by training or quantitative metrics; dynamic graph reconstruction remains
 > outside the reconstruction-comparison path.
 > Paper-metric evaluation separately derives aligned prediction and
-> ground-truth centerline-radius graphs for hard 3D clDice and clDice loss.
+> ground-truth centerline-radius graphs for hard 3D clDice, symmetric
+> centerline mean error, and radius MAE.
 
 The supplied cluster datasets have ready-to-run LCA/RCA configurations and a
 preflight launcher:

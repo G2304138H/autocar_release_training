@@ -40,7 +40,12 @@ from src.geometry.vascular_surface import (
     save_vascular_surface_bundle,
 )
 from src.geometry.voxel_grid import VoxelGrid, resample_binary_volume_nearest
-from src.metrics import compute_volume_metrics, hard_cldice_3d, masked_ssim_3d
+from src.metrics import (
+    centerline_radius_errors,
+    compute_volume_metrics,
+    hard_cldice_3d,
+    masked_ssim_3d,
+)
 from src.modules.autocar_voxel_pl import AutoCARVoxelLit
 from src.modules.sparse_utils import rasterize_sparse_channel
 from src.predict_npz import _aggregate_metrics, _device
@@ -1049,6 +1054,12 @@ def _paper_metric_case(
         origin_xyz_mm=graph_origin_xyz_mm,
         spacing_xyz_mm=graph_spacing_xyz_mm,
     )
+    graph_errors = centerline_radius_errors(
+        predicted_graph.node_xyz_mm,
+        predicted_graph.node_radius_mm,
+        ground_truth_graph.node_xyz_mm,
+        ground_truth_graph.node_radius_mm,
+    )
     cldice = hard_cldice_3d(
         ground_truth_mask,
         predicted_mask,
@@ -1100,6 +1111,25 @@ def _paper_metric_case(
             "paper_mask_ground_truth_centerline_in_prediction_voxels": cldice[
                 "ground_truth_centerline_in_prediction_voxels"
             ],
+            "paper_graph_error_valid": graph_errors["valid"],
+            "paper_graph_prediction_nodes": graph_errors["prediction_nodes"],
+            "paper_graph_ground_truth_nodes": graph_errors["ground_truth_nodes"],
+            "paper_graph_centerline_pred_to_gt_mean_error_mm": graph_errors[
+                "centerline_pred_to_gt_mean_error_mm"
+            ],
+            "paper_graph_centerline_gt_to_pred_mean_error_mm": graph_errors[
+                "centerline_gt_to_pred_mean_error_mm"
+            ],
+            "paper_graph_centerline_mean_error_mm": graph_errors[
+                "centerline_mean_error_mm"
+            ],
+            "paper_graph_radius_pred_to_gt_mae_mm": graph_errors[
+                "radius_pred_to_gt_mae_mm"
+            ],
+            "paper_graph_radius_gt_to_pred_mae_mm": graph_errors[
+                "radius_gt_to_pred_mae_mm"
+            ],
+            "paper_graph_radius_mae_mm": graph_errors["radius_mae_mm"],
             "paper_mask_intersection_voxels": metrics["intersection_voxels"],
             "paper_mask_predicted_foreground_voxels": metrics[
                 "prediction_foreground_voxels"
@@ -1216,6 +1246,14 @@ def _save_paper_centerline_graph_artifact(
     ):
         raise TypeError("paper-metric centerline graphs have an invalid type.")
     metrics = result["metrics"]
+
+    def optional_float(name: str) -> np.ndarray:
+        value = metrics.get(name)
+        return np.asarray(
+            np.nan if value is None else float(value),
+            dtype=np.float64,
+        )
+
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
@@ -1255,6 +1293,25 @@ def _save_paper_centerline_graph_artifact(
         topology_sensitivity=np.asarray(
             metrics["paper_mask_topology_sensitivity"], dtype=np.float64
         ),
+        graph_error_valid=np.asarray(
+            metrics["paper_graph_error_valid"], dtype=np.bool_
+        ),
+        centerline_pred_to_gt_mean_error_mm=optional_float(
+            "paper_graph_centerline_pred_to_gt_mean_error_mm"
+        ),
+        centerline_gt_to_pred_mean_error_mm=optional_float(
+            "paper_graph_centerline_gt_to_pred_mean_error_mm"
+        ),
+        centerline_mean_error_mm=optional_float(
+            "paper_graph_centerline_mean_error_mm"
+        ),
+        radius_pred_to_gt_mae_mm=optional_float(
+            "paper_graph_radius_pred_to_gt_mae_mm"
+        ),
+        radius_gt_to_pred_mae_mm=optional_float(
+            "paper_graph_radius_gt_to_pred_mae_mm"
+        ),
+        radius_mae_mm=optional_float("paper_graph_radius_mae_mm"),
         **_centerline_graph_fields("prediction", predicted_graph),
         **_centerline_graph_fields("ground_truth", ground_truth_graph),
     )
@@ -1771,6 +1828,38 @@ def _paper_metric_summary(
         * micro_topology_sensitivity
         / micro_cldice_denominator
     )
+    graph_summary: dict[str, Any] = {
+        "graph_error_num_valid_cases": sum(
+            bool(report.get("paper_graph_error_valid")) for report in reports
+        ),
+    }
+    graph_summary["graph_error_num_invalid_cases"] = (
+        len(reports) - graph_summary["graph_error_num_valid_cases"]
+    )
+    graph_metric_names = {
+        "centerline_pred_to_gt_mean_error_mm": (
+            "paper_graph_centerline_pred_to_gt_mean_error_mm"
+        ),
+        "centerline_gt_to_pred_mean_error_mm": (
+            "paper_graph_centerline_gt_to_pred_mean_error_mm"
+        ),
+        "centerline_mean_error_mm": "paper_graph_centerline_mean_error_mm",
+        "radius_pred_to_gt_mae_mm": "paper_graph_radius_pred_to_gt_mae_mm",
+        "radius_gt_to_pred_mae_mm": "paper_graph_radius_gt_to_pred_mae_mm",
+        "radius_mae_mm": "paper_graph_radius_mae_mm",
+    }
+    for output_name, record_name in graph_metric_names.items():
+        values = [
+            float(report[record_name])
+            for report in reports
+            if report.get(record_name) is not None
+        ]
+        mean, standard_error = (
+            _mean_standard_error(values) if values else (None, None)
+        )
+        graph_summary[f"macro_{output_name}"] = mean
+        graph_summary[f"macro_{output_name}_standard_error"] = standard_error
+        graph_summary[f"macro_{output_name}_num_cases"] = len(values)
     return {
         "protocol": protocol,
         "final_model_role": "final",
@@ -1800,6 +1889,7 @@ def _paper_metric_summary(
         "macro_topology_sensitivity": topology_sensitivity,
         "macro_topology_sensitivity_standard_error": topology_sensitivity_se,
         "macro_cldice_3d_num_cases": len(reports),
+        **graph_summary,
     }
 
 
@@ -1838,6 +1928,12 @@ def _role_summary(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "paper_mask_topology_sensitivity",
         "paper_mask_ssim_3d",
         "paper_mask_masked_ssim_3d",
+        "paper_graph_centerline_pred_to_gt_mean_error_mm",
+        "paper_graph_centerline_gt_to_pred_mean_error_mm",
+        "paper_graph_centerline_mean_error_mm",
+        "paper_graph_radius_pred_to_gt_mae_mm",
+        "paper_graph_radius_gt_to_pred_mae_mm",
+        "paper_graph_radius_mae_mm",
     )
     for name in metric_names:
         values = [
@@ -1955,6 +2051,22 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             "topology_sensitivity": "sum(skeleton(ground_truth)*prediction)/sum(skeleton(ground_truth))",
             "score": "2*topology_precision*topology_sensitivity/(topology_precision+topology_sensitivity)",
             "loss": "1-cldice_3d",
+        },
+        "centerline_radius_error_protocol": {
+            "ground_truth_source": "aligned_ground_truth_voxel_mask",
+            "graph_derivation": (
+                "lee_morphological_thinning_26n_with_edt_radius_mm"
+            ),
+            "coordinate_frame": "native_xyz_mm",
+            "correspondence": "bidirectional_nearest_centerline_node",
+            "centerline_mean_error": (
+                "0.5*(mean_pred_to_gt_distance+mean_gt_to_pred_distance)"
+            ),
+            "radius_mae": (
+                "0.5*(mean_pred_to_gt_radius_abs_error+"
+                "mean_gt_to_pred_radius_abs_error)"
+            ),
+            "empty_graph_policy": "undefined_null_and_excluded_with_count",
         },
         "coordinate_convention": (
             "prediction_array_zyx; grid_coordinates_xyz_mm; native_ground_truth_"

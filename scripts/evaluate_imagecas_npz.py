@@ -654,6 +654,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"loss={float(paper_metric['macro_cldice_loss_3d']):.6f}, "
             f"micro={float(paper_metric['micro_cldice_3d']):.6f}"
         )
+        centerline_error = paper_metric.get("macro_centerline_mean_error_mm")
+        radius_mae = paper_metric.get("macro_radius_mae_mm")
+        centerline_text = (
+            "undefined"
+            if centerline_error is None
+            else f"{float(centerline_error):.6f} mm"
+        )
+        radius_text = (
+            "undefined"
+            if radius_mae is None
+            else f"{float(radius_mae):.6f} mm"
+        )
+        print(
+            f"{artery.upper()} graph errors: "
+            f"centerline_mean={centerline_text}, "
+            f"radius_mae={radius_text} "
+            f"(valid cases={int(paper_metric.get('graph_error_num_valid_cases', 0))})"
+        )
     print(
         "Completed paper-metric evaluation: "
         + ", ".join(str(path) for path in summary_paths)
