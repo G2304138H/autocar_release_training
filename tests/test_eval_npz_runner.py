@@ -96,6 +96,7 @@ def test_config_resolves_relative_paths_and_visualization_alias(tmp_path):
     assert options.fallback_sid_mm == 900.0
     assert options.output_dir == (tmp_path / "result").resolve()
     assert options.view_direction_options["accurate"] is True
+    assert options.view_translation_options["enabled"] is False
     assert options.compute_paper_metrics is False
 
 
@@ -134,6 +135,10 @@ def test_prediction_npz_uses_stable_volume_and_evaluation_fields(tmp_path):
         np.testing.assert_array_equal(payload["view_indices"], [0, 6])
         np.testing.assert_array_equal(payload["theta_change_deg"], [0.0, 0.0])
         assert payload["view_directions_accurate"].item()
+        assert not payload["view_translation_applied"].item()
+        np.testing.assert_array_equal(
+            payload["artery_translation_xyz_mm"], [0.0, 0.0, 0.0]
+        )
 
 
 def test_inaccurate_view_directions_recompute_both_camera_matrices_without_images():
@@ -479,6 +484,17 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
             "phi_change_deg": 0.0,
             "distribution": "fixed_per_view",
             "model_interface": "world2pix4x4",
+        },
+        view_translation_options={
+            "enabled": False,
+            "translation_xyz_mm": [0.0, 0.0, 0.0],
+            "translation_magnitude_mm": 0.0,
+            "perturbed_input_position": 1,
+            "renderer_num_circle_points": 120,
+            "minimum_clean_rerender_dice": 0.98,
+            "visibility_warning_threshold": 0.95,
+            "fail_below_visibility_threshold": False,
+            "sign_convention": "test",
         },
         compute_paper_metrics=False,
         device="cpu",

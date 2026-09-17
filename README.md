@@ -23,6 +23,18 @@ preflight launcher:
 python scripts/train_imagecas_npz.py --artery lca --preflight-only
 python scripts/train_imagecas_npz.py --artery rca --preflight-only
 ```
+
+After accurate validation-plus-test paper metrics are available, run the fixed
+two-view positive-direction translational calibration stress test with:
+
+```bash
+python scripts/evaluate_imagecas_npz_view_translation_robustness.py
+```
+
+It keeps both camera angles and matrices unchanged, re-renders only the second
+input at Y/XZ/XYZ translations of 5, 10, and 20 mm total displacement, verifies
+a zero-shift rendering control, and reports Dice, clDice, visibility, timing,
+centreline error, radius MAE, and changes from the accurate control.
 <!-- | [Static 3D Viewer](https://zhuyh19-autocar-synthetic-data-preview.static.hf.space) | [Dynamic 3D Viewer](https://autocar.zyh.science/dynamic_full.html) 
 <video height="512" controls autoplay>
     <source src="teaser.mp4" type="video/mp4" >

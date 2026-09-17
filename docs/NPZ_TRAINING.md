@@ -716,6 +716,80 @@ and the paired LCA/RCA launcher summary. As in the parametric evaluator, one
 model forward on the first selected case is performed as an untimed warmup
 before all reported case timings.
 
+### Fixed two-view translational calibration robustness
+
+This is a fixed-positive-direction translation stress test, not a camera-angle
+perturbation and not a direction-independent robustness claim. Run the accurate
+two-view paper metrics first, then launch all nine translation conditions for
+the trained LCA and RCA checkpoints:
+
+```bash
+python scripts/evaluate_imagecas_npz.py
+python scripts/evaluate_imagecas_npz_view_translation_robustness.py
+```
+
+The same validation-plus-test cases and the same ordered source views `[0, 1]`
+are used in the accurate control and every condition. Input position 0 remains
+the stored accurate image. Input position 1 is re-rendered after translating
+the projection-centred artery; both nominal theta/phi values and both
+`world2pix4x4` camera matrices remain unchanged (`Delta theta = Delta phi =
+0 degrees`). AutoCAR recomputes its 2D encoder features during every forward
+pass and has no external image-feature cache in this evaluator.
+
+For total displacement `d`, rather than per-axis displacement, the conditions
+are:
+
+```text
+Y:   (0, d, 0)
+XZ:  (d/sqrt(2), 0, d/sqrt(2))
+XYZ: (d/sqrt(3), d/sqrt(3), d/sqrt(3))
+d in {5, 10, 20} mm
+```
+
+The patient coordinate convention is `+x` left, `+y` anterior/away from the
+table, and `+z` superior/toward the head. Only these positive directions are
+tested. The recorded vector moves the centred artery; the geometrically
+equivalent source-detector/isocentre displacement has the opposite sign.
+
+Before accepting each case in each condition, the evaluator re-renders view 2
+with zero translation. A Dice score below `0.98` stops that condition because
+the stored renderer, projected branch subset, or centring metadata has not been
+reproduced reliably. The projection NPZ must therefore retain `artery`,
+`projected_branch_indices`, and `projection_center_offset`. The evaluator also
+records centreline visibility, vessel-surface visibility, stored and perturbed
+foreground-pixel ratios, exact translation vector/magnitude, source view
+indices, nominal angles, and the renderer-control Dice. These measurements
+make detector clipping at 20 mm auditable.
+
+Every condition runs the ordinary AutoCAR network against the unchanged
+canonical target and records the complete paper-metric set, including hard 3D
+clDice, centreline mean error, radius MAE, timing, and changes from the accurate
+control. AutoCAR exposes one supervised final reconstruction volume; its
+ray-casting tensor is an internal feature representation, so a separate coarse
+metric and refined-minus-coarse effect are explicitly reported as not
+applicable rather than fabricated.
+
+By default, each artery writes to:
+
+```text
+<training_run>/evaluation_view_translation_robustness/<checkpoint>/
+  view_translation_robustness_summary.json
+  view_translation_robustness_metrics.csv
+  view_translation_robustness_timing.csv
+  run_configs/<condition>.json
+  conditions/<condition>/
+    performance_summary.json
+    performance_per_case.json
+    metrics/view_translation_per_case.{json,csv}
+    metrics/paper_metric_per_case.{json,csv}
+    metrics/paper_metric_summary.json
+    predictions/final/{validation,test}/<case_id>.npz
+```
+
+For a custom path layout, copy
+`configs/eval_npz_view_translation_robustness_template.json`, fill its paths,
+then run `python -m src.eval_npz --config <copied-config.json>`.
+
 ### Inaccurate view-direction robustness
 
 Run the accurate validation-plus-test paper metrics first, then launch the

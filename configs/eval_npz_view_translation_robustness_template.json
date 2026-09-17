@@ -1,0 +1,55 @@
+{
+  "experiment_dir": null,
+  "checkpoint_path": "/path/to/checkpoints/best.ckpt",
+  "checkpoint_choice": "best",
+  "projection_source": "/path/to/stage2/projections",
+  "voxel_source": "/path/to/stage2/voxels",
+  "split_json_path": "/path/to/stage2/splits.json",
+  "eval_output_dir": "/path/to/results/autocar/evaluation_view_translation_robustness",
+
+  "evaluation_mode": "view_translation_robustness",
+  "eval_split": "val_test",
+  "num_eval_cases": "all",
+  "eval_case_ids": null,
+  "eval_num_views": 2,
+  "eval_view_selection": "fixed",
+  "evaluation_view_indices": [0, 1],
+  "evaluation_view_labels": null,
+  "evaluation_view_directions": {
+    "accurate": true,
+    "theta_change_deg": 0.0,
+    "phi_change_deg": 0.0
+  },
+  "case_id_mode": "imagecas_numeric",
+  "expected_imager_pixel_spacing_mm": null,
+  "fallback_imager_pixel_spacing_mm": null,
+  "fallback_sid_mm": null,
+  "source_to_isocenter_mm": 750.0,
+
+  "save_prediction_npz_files": true,
+  "max_visualizations": 0,
+  "device": "auto",
+  "precision": "32",
+  "output_dtype": "float16",
+  "paper_metric_volume_threshold": 0.5,
+  "paper_metric_ssim_window_size": 7,
+  "ssim_chunk_depth": 8,
+  "ground_truth_origin_xyz_mm": null,
+  "overwrite": false,
+
+  "view_translation_robustness": {
+    "magnitudes_mm": [5.0, 10.0, 20.0],
+    "patterns": ["y", "xz", "xyz"],
+    "perturbed_input_position": 1,
+    "renderer_num_circle_points": 120,
+    "minimum_clean_rerender_dice": 0.98,
+    "visibility_warning_threshold": 0.95,
+    "fail_below_visibility_threshold": false,
+    "accurate_baseline_summary": "auto",
+    "require_accurate_baseline": true,
+    "record_paper_metrics": true,
+    "save_mask_npz_files": false,
+    "save_centerline_graph_npz_files": false,
+    "output_dir": null
+  }
+}

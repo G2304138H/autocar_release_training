@@ -10,7 +10,9 @@ baseline while keeping AutoCAR's existing Stage-2 volume and metric contracts:
 * visualisation mode additionally writes input-view, volume, and derived
   centerline-radius surface monitor artifacts;
 * inaccurate-view mode sweeps fixed signed camera-angle errors while keeping
-  the two source projection images unchanged.
+  the two source projection images unchanged; and
+* translation robustness keeps both camera encodings accurate while replacing
+  only the second image with a translated-artery re-render.
 """
 
 from __future__ import annotations
@@ -49,6 +51,11 @@ from src.metrics import (
 from src.modules.autocar_voxel_pl import AutoCARVoxelLit
 from src.modules.sparse_utils import rasterize_sparse_channel
 from src.predict_npz import _aggregate_metrics, _device
+from src.view_translation_npz import (
+    apply_evaluation_view_translation,
+    resolve_evaluation_view_translation,
+    summarize_translation_records,
+)
 
 
 _EVALUATION_SPLITS = frozenset({"val", "test", "val_test"})
@@ -82,6 +89,7 @@ class EvaluationOptions:
     view_indices: tuple[int, int]
     view_labels: tuple[str, str] | None
     view_direction_options: Mapping[str, Any]
+    view_translation_options: Mapping[str, Any]
     compute_paper_metrics: bool
     device: str
     precision: str
@@ -586,6 +594,7 @@ def resolve_evaluation_options(
             "save_prediction_npz_files must be true for the AutoCAR evaluation runner."
         )
     view_direction_options = resolve_evaluation_view_directions(config)
+    view_translation_options = resolve_evaluation_view_translation(config)
     robustness_condition = config.get(
         "view_direction_robustness_condition", False
     )
@@ -608,8 +617,47 @@ def resolve_evaluation_options(
             "A view-direction robustness child condition must use inaccurate "
             "evaluation_view_directions."
         )
+    translation_condition = config.get(
+        "view_translation_robustness_condition", False
+    )
+    if not isinstance(translation_condition, bool):
+        raise ValueError("view_translation_robustness_condition must be boolean.")
+    record_translation_paper_metrics = config.get(
+        "record_view_translation_paper_metrics", False
+    )
+    if not isinstance(record_translation_paper_metrics, bool):
+        raise ValueError(
+            "record_view_translation_paper_metrics must be boolean."
+        )
+    if record_translation_paper_metrics and not translation_condition:
+        raise ValueError(
+            "record_view_translation_paper_metrics=true is reserved for child "
+            "runs created by evaluation_mode='view_translation_robustness'."
+        )
+    if translation_condition and not view_translation_options["enabled"]:
+        raise ValueError(
+            "A translation-robustness child condition must enable "
+            "evaluation_view_translation."
+        )
+    if translation_condition and not view_direction_options["accurate"]:
+        raise ValueError(
+            "Translation robustness requires accurate camera directions with "
+            "theta_change_deg=phi_change_deg=0."
+        )
+    if view_translation_options["enabled"] and not view_direction_options["accurate"]:
+        raise ValueError(
+            "An image translation and a camera-angle perturbation cannot be "
+            "applied together."
+        )
+    if robustness_condition and translation_condition:
+        raise ValueError(
+            "Camera-angle and view-translation robustness conditions cannot be "
+            "combined in one child run."
+        )
     compute_paper_metrics = bool(
-        mode == "paper_metric" or record_robustness_paper_metrics
+        mode == "paper_metric"
+        or record_robustness_paper_metrics
+        or record_translation_paper_metrics
     )
     paper_metric_save_masks = config.get("paper_metric_save_masks", True)
     if not isinstance(paper_metric_save_masks, bool):
@@ -664,6 +712,7 @@ def resolve_evaluation_options(
             "evaluation_view_indices": list(view_indices),
             "evaluation_view_labels": None if view_labels is None else list(view_labels),
             "evaluation_view_directions": view_direction_options,
+            "evaluation_view_translation": view_translation_options,
             "eval_num_views": len(view_indices),
             "eval_view_selection": "fixed",
             "save_prediction_npz_files": True,
@@ -700,6 +749,7 @@ def resolve_evaluation_options(
         view_indices=(view_indices[0], view_indices[1]),
         view_labels=view_labels,
         view_direction_options=view_direction_options,
+        view_translation_options=view_translation_options,
         compute_paper_metrics=compute_paper_metrics,
         device=str(config.get("device", "auto")),
         precision=precision,
@@ -1623,6 +1673,10 @@ def _save_prediction_npz(
     phi_change = _numpy(
         sample.get("phi_change_deg", np.zeros_like(original_phi))
     ).astype(np.float32, copy=False)
+    translation_xyz_mm = np.asarray(
+        sample.get("view_translation_xyz_mm", np.zeros(3, dtype=np.float32)),
+        dtype=np.float32,
+    ).reshape(3)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
@@ -1652,6 +1706,14 @@ def _save_prediction_npz(
         original_world2pix4x4=_numpy(
             sample.get("original_world2pix4x4", sample["world2pix4x4"])
         ).astype(np.float32, copy=False),
+        view_translation_applied=np.asarray(
+            bool(sample.get("view_translation_applied", False)), dtype=np.bool_
+        ),
+        artery_translation_xyz_mm=translation_xyz_mm,
+        equivalent_isocentre_translation_xyz_mm=-translation_xyz_mm,
+        translation_magnitude_mm=np.asarray(
+            float(np.linalg.norm(translation_xyz_mm)), dtype=np.float32
+        ),
         volume_axis_order=np.asarray("zyx"),
         bbox_min_xyz_mm=np.asarray(protocol["bbox_min_xyz_mm"], dtype=np.float32),
         bbox_max_xyz_mm=np.asarray(protocol["bbox_max_xyz_mm"], dtype=np.float32),
@@ -2100,12 +2162,16 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
     prediction_records: list[dict[str, Any]] = []
     timing_rows: list[dict[str, Any]] = []
     view_direction_changes_by_case: dict[str, list[dict[str, float | int]]] = {}
+    view_translation_records: list[dict[str, Any]] = []
     warmup_performed = options.compute_paper_metrics
     with torch.inference_mode():
         if warmup_performed:
             print("Running one untimed model warmup on the first selected case")
             warmup_sample, _ = evaluation_model_camera_sample(
                 dataset[0], options.view_direction_options
+            )
+            warmup_sample, _ = apply_evaluation_view_translation(
+                warmup_sample, options.view_translation_options
             )
             _forward_dense(
                 model,
@@ -2119,6 +2185,9 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             source_sample = dataset[index]
             sample, view_direction_records = evaluation_model_camera_sample(
                 source_sample, options.view_direction_options
+            )
+            sample, translation_record = apply_evaluation_view_translation(
+                sample, options.view_translation_options
             )
             case_id = str(sample["case_id"])
             view_direction_changes_by_case[case_id] = view_direction_records
@@ -2244,6 +2313,17 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                         "processing_elapsed_ms": processing_elapsed_ms,
                     }
                 )
+            if translation_record is not None:
+                translation_record.update(
+                    {
+                        "split": dataset_split,
+                        "inference_elapsed_ms": elapsed_ms,
+                        "processing_elapsed_ms": processing_elapsed_ms,
+                        "prediction": str(prediction_path),
+                        "final_metrics": _metric_values(report),
+                    }
+                )
+                view_translation_records.append(translation_record)
             if index < options.max_visualizations:
                 visualization_path = (
                     output_dir / "visualization" / case_id / dataset_split / "final"
@@ -2297,6 +2377,15 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         for split_name in combined["split_counts"]
     }
     role_summary = _role_summary(reports)
+    translation_summary = summarize_translation_records(
+        view_translation_records
+    )
+    translation_per_case_path = (
+        output_dir / "metrics" / "view_translation_per_case.json"
+    )
+    translation_csv_path = (
+        output_dir / "metrics" / "view_translation_per_case.csv"
+    )
     paper_summary = (
         _paper_metric_summary(paper_metric_records, protocol=metric_protocol)
         if paper_metric_records
@@ -2351,6 +2440,15 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             "phi_change_deg": float(
                 options.view_direction_options["phi_change_deg"]
             ),
+            "view_translation_applied": bool(
+                options.view_translation_options["enabled"]
+            ),
+            "artery_translation_xyz_mm": list(
+                options.view_translation_options["translation_xyz_mm"]
+            ),
+            "translation_magnitude_mm": float(
+                options.view_translation_options["translation_magnitude_mm"]
+            ),
         },
         "evaluation": {
             **combined,
@@ -2362,6 +2460,31 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 view_direction_changes_by_case,
                 applied=not bool(options.view_direction_options["accurate"]),
             ),
+            "view_translation_perturbation": {
+                "enabled": bool(options.view_translation_options["enabled"]),
+                "options": dict(options.view_translation_options),
+                "camera_angle_changes_deg": {"theta": 0.0, "phi": 0.0},
+                "camera_matrices_changed": False,
+                "first_input_image_changed": False,
+                "second_input_image_rerendered": bool(
+                    options.view_translation_options["enabled"]
+                ),
+                "image_features_recomputed": bool(
+                    options.view_translation_options["enabled"]
+                ),
+                "image_feature_cache_used": False,
+                "summary": translation_summary,
+                "per_case_file": (
+                    str(translation_per_case_path)
+                    if view_translation_records
+                    else None
+                ),
+                "per_case_csv": (
+                    str(translation_csv_path)
+                    if view_translation_records
+                    else None
+                ),
+            },
         },
         "timing": timing_summary,
         "roles": {"final": role_summary},
@@ -2414,6 +2537,41 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         output_dir / "timings" / "processing" / "summary.json",
         timing_summary,
     )
+
+    if view_translation_records:
+        _write_json(translation_per_case_path, view_translation_records)
+        translation_rows: list[dict[str, Any]] = []
+        for record in view_translation_records:
+            row = {
+                key: value
+                for key, value in record.items()
+                if not isinstance(value, (dict, list, tuple))
+            }
+            row.update(
+                {
+                    "translation_x_mm": record[
+                        "artery_translation_xyz_mm"
+                    ][0],
+                    "translation_y_mm": record[
+                        "artery_translation_xyz_mm"
+                    ][1],
+                    "translation_z_mm": record[
+                        "artery_translation_xyz_mm"
+                    ][2],
+                    "selected_view_1": record[
+                        "selected_source_view_indices"
+                    ][0],
+                    "selected_view_2": record[
+                        "selected_source_view_indices"
+                    ][1],
+                    **{
+                        f"final_{key}": value
+                        for key, value in record["final_metrics"].items()
+                    },
+                }
+            )
+            translation_rows.append(row)
+        _write_csv(translation_csv_path, translation_rows)
 
     if options.evaluation_mode in {"metric", "paper_metric"} or options.compute_paper_metrics:
         metrics_dir = output_dir / "metrics"
@@ -2516,6 +2674,12 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             view_direction_changes_by_case,
             applied=not bool(options.view_direction_options["accurate"]),
         ),
+        "evaluation_view_translation": dict(
+            options.view_translation_options
+        ),
+        "view_translation_perturbation": performance_summary["evaluation"][
+            "view_translation_perturbation"
+        ],
         "expected_imager_pixel_spacing_mm": (
             options.expected_imager_pixel_spacing_mm
         ),
@@ -2566,6 +2730,11 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             ),
             "performance_summary": "performance_summary.json",
             "performance_per_case": "performance_per_case.json",
+            "view_translation_per_case": (
+                "metrics/view_translation_per_case.json"
+                if view_translation_records
+                else None
+            ),
         },
     }
     _write_json(output_dir / "evaluation_record.json", evaluation_record)
@@ -2602,10 +2771,57 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config_path = Path(args.config).expanduser().resolve()
     raw_config = _load_json_object(config_path)
+    from src.view_translation_robustness_npz import (
+        is_view_translation_robustness_mode,
+        run_view_translation_robustness,
+    )
     from src.view_direction_robustness_npz import (
         is_view_direction_robustness_mode,
         run_view_direction_robustness,
     )
+
+    if is_view_translation_robustness_mode(raw_config.get("evaluation_mode")):
+        if args.metrics_only:
+            raise ValueError(
+                "--metrics_only cannot replace the view-translation "
+                "orchestrator mode."
+            )
+        sweep_config = dict(raw_config)
+        if args.split is not None:
+            sweep_config["eval_split"] = args.split
+        if args.case_ids:
+            sweep_config["eval_case_ids"] = list(args.case_ids)
+        if args.max_cases is not None:
+            sweep_config["num_eval_cases"] = args.max_cases
+        checkpoint, checkpoint_choice = _resolve_checkpoint(
+            sweep_config,
+            config_path=config_path,
+            cli_checkpoint=args.checkpoint,
+        )
+        experiment_raw = sweep_config.get("experiment_dir")
+        if experiment_raw is not None and str(experiment_raw).strip():
+            experiment_dir = _resolve_path(
+                experiment_raw,
+                config_path=config_path,
+                label="experiment_dir",
+            )
+        else:
+            experiment_dir = (
+                checkpoint.parent.parent
+                if checkpoint.parent.name == "checkpoints"
+                else checkpoint.parent
+            )
+        aggregate_path = run_view_translation_robustness(
+            eval_config=sweep_config,
+            config_path=config_path,
+            checkpoint=checkpoint,
+            checkpoint_choice=checkpoint_choice,
+            experiment_dir=experiment_dir,
+            output_override=args.output_dir,
+            project_root=Path(__file__).resolve().parents[1],
+        )
+        print(f"Completed view-translation evaluation: {aggregate_path}")
+        return 0
 
     if is_view_direction_robustness_mode(raw_config.get("evaluation_mode")):
         if args.metrics_only:
