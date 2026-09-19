@@ -4,7 +4,7 @@ import json
 
 import numpy as np
 
-from src.evaluate_npz import evaluate_case, main
+from src.evaluate_npz import _load_center_offset_mm, evaluate_case, main
 
 
 def _case_files(tmp_path):
@@ -93,6 +93,33 @@ def test_evaluate_case_honours_explicit_length_units(tmp_path):
     np.testing.assert_allclose(
         metrics["ground_truth_spacing_xyz_mm"], [1.0, 1.0, 1.0]
     )
+
+
+def test_center_offset_loader_accepts_explicit_millimetre_metadata(tmp_path):
+    projection_path = tmp_path / "projection_exact_offset.npz"
+    np.savez_compressed(
+        projection_path,
+        projection_center_offset_xyz_mm=np.asarray(
+            [1.25, -2.5, 3.75], dtype=np.float32
+        ),
+    )
+
+    np.testing.assert_allclose(
+        _load_center_offset_mm(projection_path), [1.25, -2.5, 3.75]
+    )
+
+
+def test_center_offset_loader_cross_checks_both_encodings(tmp_path):
+    projection_path = tmp_path / "projection_conflicting_offsets.npz"
+    np.savez_compressed(
+        projection_path,
+        projection_center_offset=np.asarray([0.001, 0.002, 0.003]),
+        input_scale_to_mm=np.asarray(1000.0),
+        projection_center_offset_xyz_mm=np.asarray([1.0, 2.0, 9.0]),
+    )
+
+    with np.testing.assert_raises_regex(ValueError, "disagree"):
+        _load_center_offset_mm(projection_path)
 
 
 def test_cli_writes_audited_json(tmp_path, capsys):

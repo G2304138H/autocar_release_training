@@ -181,6 +181,22 @@ def export_predictions(args: argparse.Namespace) -> dict[str, Any]:
                 voxel_size_mm=np.asarray(
                     projection.voxel_size, dtype=np.float32
                 ),
+                projection_center_offset_xyz_mm=np.asarray(
+                    sample["projection_center_offset_xyz_mm"], dtype=np.float32
+                ),
+                **(
+                    {
+                        "dataset_split": np.asarray(
+                            {
+                                "train": "train",
+                                "val": "validation",
+                                "test": "test",
+                            }[args.split]
+                        )
+                    }
+                    if args.split_json is not None
+                    else {}
+                ),
             )
             report: dict[str, Any] = {
                 "case_id": case_id,

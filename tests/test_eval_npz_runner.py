@@ -110,6 +110,7 @@ def test_prediction_npz_uses_stable_volume_and_evaluation_fields(tmp_path):
         "world2pix4x4": torch.eye(4).repeat(2, 1, 1),
         "pair_angle_deg": torch.tensor(62.5),
         "view_labels": ("first", "second"),
+        "projection_center_offset_xyz_mm": torch.tensor([1.0, 2.0, 3.0]),
     }
     protocol = {
         "bbox_min_xyz_mm": [-1.0, -2.0, -3.0],
@@ -138,6 +139,9 @@ def test_prediction_npz_uses_stable_volume_and_evaluation_fields(tmp_path):
         assert not payload["view_translation_applied"].item()
         np.testing.assert_array_equal(
             payload["artery_translation_xyz_mm"], [0.0, 0.0, 0.0]
+        )
+        np.testing.assert_array_equal(
+            payload["projection_center_offset_xyz_mm"], [1.0, 2.0, 3.0]
         )
 
 

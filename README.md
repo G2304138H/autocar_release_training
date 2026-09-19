@@ -15,6 +15,10 @@ Transferable 3D Dynamic Vascular Reconstruction For Instantaneous Diagnosis*.
 > Paper-metric evaluation separately derives aligned prediction and
 > ground-truth centerline-radius graphs for hard 3D clDice, symmetric
 > centerline mean error, unhalved set-to-set Chamfer distance, and radius MAE.
+> A separate saved-volume directory evaluator can instead use one common raw
+> vessel-code reference for every method and fixes Dice/clDice evaluation to a
+> 0.5 mm isotropic grid; see
+> [offline raw-reference evaluation](docs/NPZ_TRAINING.md#offline-directory-evaluation-against-raw-vessel-code).
 
 The supplied cluster datasets have ready-to-run LCA/RCA configurations and a
 preflight launcher:

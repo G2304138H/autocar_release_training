@@ -923,6 +923,102 @@ native lower boundary explicitly.
 Use the same evaluator, grid, pair, threshold, and FOV definition for AutoCAR
 and the comparison model.
 
+### Offline directory evaluation against raw vessel code
+
+Saved volumes can be evaluated without loading AutoCAR, a checkpoint, CUDA,
+or the original input views:
+
+```bash
+python scripts/evaluate_autocar_prediction_directory.py \
+  --artery lca \
+  --prediction-dir /path/to/evaluation/predictions/final \
+  --raw-vessel-dir /path/to/raw_vessel_targets \
+  --projection-dir /path/to/stage_2_projection_npzs \
+  --output-dir /path/to/offline_graph_metrics \
+  --save-masks
+```
+
+Both input directories are searched recursively and paired by normalized case
+ID. `--artery lca` or `--artery rca` is mandatory because LCA and RCA reuse
+case numbers. The evaluator rejects conflicting artery markers found in paths
+or scalar NPZ metadata and records how many files could be independently
+verified; the explicit flag remains the audit label for generic numeric-only
+layouts. Prediction files must contain `prediction_volume_zyx` plus their axis,
+bounding-box and voxel-spacing metadata. By default they must also record the
+ordered input pair `view_indices=[0,1]`. Use
+`--expected-view-indices I J` only for a deliberately different protocol;
+`[0,6]` predictions are rejected by the default run rather than mixed with the
+strict two-view result. `--allow-missing-view-indices` is an explicit escape
+hatch for externally audited third-party volumes that cannot carry this
+metadata. Raw targets must contain
+`raw_vessel_code_mm[M,N,4]` in `(x,y,z,radius)` order; `branch_exists` and
+`point_valid_mask` are honoured when present. New prediction exports embed
+`projection_center_offset_xyz_mm`. For an older prediction, provide the
+matching Stage-2 files with `--projection-dir` so native raw coordinates can
+be aligned with the projection-centred reconstruction. A missing required
+offset is an error rather than an assumed zero shift.
+
+The lower-level `python -m src.predict_npz` exporter retains its training-time
+`[0,6]` default. If it is used to create inputs for this strict offline
+protocol, override both fields explicitly:
+
+```bash
+python -m src.predict_npz ... \
+  --view-indices 0 1 \
+  --expected-view-labels "RAO 25, CAU 35" "LAO 5, CAU 30"
+```
+
+This evaluator deliberately fixes one common comparison lattice to **0.5 mm
+isotropic spacing**. Its default half-open bounds are AutoCAR's
+`[-100,-100,-100]` to `[100,100,100]` mm, producing a `400 x 400 x 400` ZYX
+grid. It thresholds a saved prediction first (default `0.5`), then
+nearest-neighbour resamples the binary mask onto that lattice. Every source
+prediction must cover the full common field of view. Use the same explicit
+`--evaluation-bbox-min-xyz-mm X Y Z` and
+`--evaluation-bbox-max-xyz-mm X Y Z` for every compared method only when the
+dataset intentionally uses different common bounds. Spacing remains fixed at
+0.5 mm and is not a user-adjustable option.
+
+The raw radius-varying polylines and raw centreline are rasterized on the same
+lattice. By default every raw centreline and radius sample must be fully
+contained; otherwise evaluation stops instead of silently dropping branches.
+`--allow-clipped-raw-reference` is an explicit diagnostic override, and the
+inside-FOV fractions remain in the per-case report. Consequently, both 3-D
+Dice and clDice are computed at 0.5 mm with a shared origin, bounds, and field
+of view.
+
+The default shared-reference protocol reports:
+
+- 3-D Dice against the tube mask rasterized from raw centreline radii, with
+  the explicit DDA centreline unioned into the mask so sub-voxel vessels remain
+  represented;
+- hard clDice against that tube mask and the explicit raw centreline;
+- direct centerline-voxel Dice as a separate diagnostic;
+- both directional nearest-set centreline errors, their half-averaged mean,
+  and the unhalved Chamfer distance (the sum of the directional means);
+- a post-processed radius MAE using the same nearest spatial matches; and
+- per-case processing time.
+
+Use `--ground-truth-volume-dir /path/to/voxel_npzs` when 3-D Dice should use
+the native voxel segmentation instead of the tube reconstructed from raw
+radii. In that mode clDice and Chamfer still use the explicitly supplied raw
+centreline, keeping the centreline reference identical across methods. This
+raw-reference protocol is intentionally distinct from the existing
+`paper_metric` mode, whose Dice and clDice both use the native CT mask and its
+morphologically thinned skeleton. Voxels outside the native GT field of view
+are excluded from both Dice and clDice and are saved as an explicit valid-FOV
+mask when `--save-masks` is active.
+
+Outputs include `per_case_metrics.{json,csv}`, `evaluation_summary.{json,csv}`,
+`timing_per_case.csv`, paired prediction/raw graph NPZs, and optional common-
+grid masks. The summary contains macro mean/standard error, pooled Dice and
+clDice, split-specific summaries, and an auditable protocol block. Use
+`--case-id` repeatedly to select individual cases and `--overwrite` to reuse a
+non-empty destination; the manifest's exact `graph_files` and `mask_files`
+lists identify the current run if older unreferenced artifacts remain. SciPy
+and scikit-image are required for graph extraction and nearest-neighbour
+errors; both are already pinned in `requirements/base.txt`.
+
 ## 7. Required tests before training
 
 CPU tests must establish:

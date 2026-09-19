@@ -77,6 +77,21 @@ def _load_prediction(path: Path, key: str) -> tuple[np.ndarray, dict[str, Any]]:
                         "finite XYZ values."
                     )
                 metadata[name] = [float(item) for item in value]
+            if "projection_center_offset_xyz_mm" in data:
+                center_offset = np.asarray(
+                    data["projection_center_offset_xyz_mm"], dtype=np.float64
+                )
+                if center_offset.shape != (3,) or not np.isfinite(
+                    center_offset
+                ).all():
+                    raise ValueError(
+                        "Prediction metadata "
+                        "'projection_center_offset_xyz_mm' must contain three "
+                        "finite XYZ values."
+                    )
+                metadata["projection_center_offset_xyz_mm"] = [
+                    float(item) for item in center_offset
+                ]
             if "voxel_size_mm" in data:
                 voxel_size = float(
                     _metadata_scalar(data, "voxel_size_mm", path)
@@ -92,6 +107,15 @@ def _load_prediction(path: Path, key: str) -> tuple[np.ndarray, dict[str, Any]]:
                 if not case_id:
                     raise ValueError("Prediction metadata case_id cannot be empty.")
                 metadata["case_id"] = case_id
+            if "dataset_split" in data:
+                dataset_split = _scalar_text(
+                    _metadata_scalar(data, "dataset_split", path)
+                )
+                if not dataset_split:
+                    raise ValueError(
+                        "Prediction metadata dataset_split cannot be empty."
+                    )
+                metadata["dataset_split"] = dataset_split
             if "view_indices" in data:
                 raw_indices = np.asarray(data["view_indices"])
                 try:
@@ -183,9 +207,26 @@ def _load_ground_truth(path: Path) -> tuple[np.ndarray, np.ndarray]:
 
 def _load_center_offset_mm(path: Path) -> np.ndarray:
     with np.load(path, allow_pickle=False) as data:
+        exact_offset = (
+            np.asarray(
+                data["projection_center_offset_xyz_mm"], dtype=np.float64
+            )
+            if "projection_center_offset_xyz_mm" in data
+            else None
+        )
         if "projection_center_offset" not in data:
+            if exact_offset is not None:
+                if exact_offset.shape != (3,) or not np.isfinite(
+                    exact_offset
+                ).all():
+                    raise ValueError(
+                        "projection_center_offset_xyz_mm must contain three "
+                        "finite values."
+                    )
+                return exact_offset
             raise KeyError(
-                f"Projection NPZ {path} requires projection_center_offset."
+                f"Projection NPZ {path} requires projection_center_offset "
+                "or projection_center_offset_xyz_mm."
             )
         offset = np.asarray(data["projection_center_offset"], dtype=np.float64)
         units = None
@@ -207,10 +248,25 @@ def _load_center_offset_mm(path: Path) -> np.ndarray:
     if offset.shape != (3,) or not np.isfinite(offset).all():
         raise ValueError("projection_center_offset must contain three finite values.")
     if units is not None:
-        return _length_array_to_mm(offset, units, "projection center offset")
-    if scale is None or not math.isfinite(scale) or scale <= 0:
-        raise ValueError("input_scale_to_mm must be finite and positive.")
-    return offset * scale
+        converted = _length_array_to_mm(
+            offset, units, "projection center offset"
+        )
+    else:
+        if scale is None or not math.isfinite(scale) or scale <= 0:
+            raise ValueError("input_scale_to_mm must be finite and positive.")
+        converted = offset * scale
+    if exact_offset is not None:
+        if exact_offset.shape != (3,) or not np.isfinite(exact_offset).all():
+            raise ValueError(
+                "projection_center_offset_xyz_mm must contain three finite "
+                "values."
+            )
+        if not np.allclose(converted, exact_offset, rtol=0.0, atol=1e-4):
+            raise ValueError(
+                "projection_center_offset and "
+                "projection_center_offset_xyz_mm disagree."
+            )
+    return converted
 
 
 def _optional_case_id(path: Path, *, fallback_to_stem: bool) -> str | None:

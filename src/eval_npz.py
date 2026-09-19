@@ -1728,6 +1728,9 @@ def _save_prediction_npz(
         bbox_min_xyz_mm=np.asarray(protocol["bbox_min_xyz_mm"], dtype=np.float32),
         bbox_max_xyz_mm=np.asarray(protocol["bbox_max_xyz_mm"], dtype=np.float32),
         voxel_size_mm=np.asarray(protocol["voxel_size_mm"], dtype=np.float32),
+        projection_center_offset_xyz_mm=_numpy(
+            sample["projection_center_offset_xyz_mm"]
+        ).astype(np.float32, copy=False),
     )
 
 
