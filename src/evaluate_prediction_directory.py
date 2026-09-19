@@ -44,6 +44,18 @@ from src.metrics import centerline_radius_errors, masked_dice_3d
 
 _EVALUATION_VOXEL_SIZE_MM = 0.5
 _PREDICTION_METHODS = ("autocar", "deepca", "3dgrcar")
+_RAW_VESSEL_AUTO_KEYS = (
+    "raw_vessel_code_mm",
+    "uniform_arc_vessel_code_mm",
+    "branches_xyzr_resampled",
+    "artery",
+)
+_RAW_VESSEL_SCHEMA_SCALE_TO_MM = {
+    "raw_vessel_code_mm": 1.0,
+    "uniform_arc_vessel_code_mm": 1.0,
+    "branches_xyzr_resampled": 1.0,
+    "artery": 1000.0,
+}
 
 
 _RAW_FRAME_ALIASES = {
@@ -72,6 +84,10 @@ class RawVesselCode:
     point_valid: np.ndarray
     coordinate_frame: str
     vessel_key: str
+    scale_to_mm: float
+    scale_source: str
+    branch_exists_source: str
+    point_valid_source: str
 
     @property
     def active_point_mask(self) -> np.ndarray:
@@ -345,6 +361,22 @@ def _canonical_case_id(raw: Any) -> str:
     return text.casefold()
 
 
+def _safe_scalar_metadata(data: Any, key: str, path: Path) -> Any | None:
+    """Read scalar metadata without enabling pickle-backed object arrays."""
+
+    try:
+        value = np.asarray(data[key])
+    except ValueError as error:
+        if "Object arrays cannot be loaded when allow_pickle=False" in str(error):
+            return None
+        raise
+    if value.size != 1:
+        raise ValueError(f"{path} {key} must contain one scalar value.")
+    if value.dtype.kind == "O":
+        return None
+    return value.reshape(()).item()
+
+
 def _case_id_from_path(path: Path) -> str:
     if path.parent.name.isdigit():
         return str(int(path.parent.name))
@@ -358,13 +390,16 @@ def _case_id_from_path(path: Path) -> str:
 
 
 def _embedded_case_id(data: Any, path: Path) -> str | None:
-    for key in ("case_id", "source_case_id", "sample_name"):
+    # Stage-2 ImageCAS files commonly store source_case_id as an object array,
+    # but also provide the pickle-free sample_name (for example, lca_0001).
+    # Prefer safe string metadata and never enable pickle merely to identify a
+    # case supplied by an external NPZ.
+    for key in ("case_id", "sample_name", "source_case_id"):
         if key not in data.files:
             continue
-        value = np.asarray(data[key])
-        if value.size != 1:
-            raise ValueError(f"{path} {key} must contain one scalar value.")
-        return _canonical_case_id(value.reshape(()).item())
+        value = _safe_scalar_metadata(data, key, path)
+        if value is not None:
+            return _canonical_case_id(value)
     return None
 
 
@@ -426,6 +461,7 @@ def _discover_prediction_npzs(
     requested_method: str,
     prediction_key: str | None,
     case_id_override: str | None,
+    artery: str | None = None,
 ) -> dict[str, Path]:
     source = Path(source_path).expanduser().resolve()
     if source.is_file():
@@ -474,6 +510,10 @@ def _discover_prediction_npzs(
                         expected_key in keys or "prediction_method" in keys
                     )
                 if not looks_like_prediction:
+                    continue
+                if artery is not None and not _matches_requested_artery(
+                    path, artery=artery
+                ):
                     continue
                 method, _ = _resolve_prediction_method(
                     data, path, requested_method
@@ -993,6 +1033,7 @@ def _discover_npz_by_key(
     required_keys: Sequence[str],
     label: str,
     preferred_filename: str | None = None,
+    artery: str | None = None,
 ) -> dict[str, Path]:
     source = Path(root).expanduser().resolve()
     if not source.is_dir():
@@ -1002,6 +1043,10 @@ def _discover_npz_by_key(
         try:
             with np.load(path, allow_pickle=False) as data:
                 if not any(key in data.files for key in required_keys):
+                    continue
+                if artery is not None and not _matches_requested_artery(
+                    path, artery=artery
+                ):
                     continue
                 case_id = _embedded_case_id(data, path)
         except (OSError, ValueError) as error:
@@ -1050,7 +1095,13 @@ def _artery_markers_text(value: Any) -> set[str]:
 
 
 def _artery_markers(path: Path) -> set[str]:
-    markers = _artery_markers_text(path)
+    path_markers: set[str] = set()
+    for component in reversed(path.parts):
+        component_markers = _artery_markers_text(component)
+        if len(component_markers) == 1:
+            path_markers = component_markers
+            break
+    metadata_markers: set[str] = set()
     with np.load(path, allow_pickle=False) as data:
         for key in (
             "artery_type",
@@ -1063,11 +1114,44 @@ def _artery_markers(path: Path) -> set[str]:
         ):
             if key not in data.files:
                 continue
-            value = np.asarray(data[key])
-            if value.size != 1 or value.dtype.kind not in {"U", "S"}:
+            value = _safe_scalar_metadata(data, key, path)
+            if value is None or not isinstance(value, (str, bytes, np.str_)):
                 continue
-            markers.update(_artery_markers_text(value.reshape(()).item()))
-    return markers
+            metadata_markers.update(_artery_markers_text(value))
+    if metadata_markers:
+        # Components containing both labels are ignored above because they are
+        # commonly shared roots (for example, lca_rca_results), not file-level
+        # anatomy. A single nearest marker is specific enough to cross-check.
+        metadata_markers.update(path_markers)
+        return metadata_markers
+    return path_markers
+
+
+def _matches_requested_artery(path: Path, *, artery: str) -> bool:
+    markers = _artery_markers(path)
+    if len(markers) > 1:
+        raise ValueError(
+            f"Cannot assign {path} to one anatomy because it contains "
+            f"conflicting artery markers {sorted(markers)}."
+        )
+    return not markers or artery in markers
+
+
+def _resolve_raw_vessel_key(payload: Any, requested: str, path: Path) -> str:
+    if requested != "auto":
+        if requested not in payload.files:
+            raise KeyError(
+                f"{path} lacks raw vessel key {requested!r}; available: "
+                f"{sorted(payload.files)}"
+            )
+        return requested
+    for candidate in _RAW_VESSEL_AUTO_KEYS:
+        if candidate in payload.files:
+            return candidate
+    raise KeyError(
+        f"{path} has none of the supported raw vessel keys "
+        f"{list(_RAW_VESSEL_AUTO_KEYS)}; available: {sorted(payload.files)}"
+    )
 
 
 def _validate_artery_paths(
@@ -1105,15 +1189,18 @@ def _raw_frame(
     for key in ("coordinate_frame", "vessel_coordinate_frame"):
         if key not in payload.files:
             continue
-        value = np.asarray(payload[key])
-        if value.size != 1:
-            raise ValueError(f"{path} {key} must be scalar.")
-        stored = _scalar_text(value.reshape(()).item()).lower().replace("-", "_")
+        value = _safe_scalar_metadata(payload, key, path)
+        if value is None:
+            raise ValueError(
+                f"{path} {key} is pickle-backed object metadata and cannot be "
+                "safely inspected. Pass --raw-coordinate-frame explicitly."
+            )
+        stored = _scalar_text(value).lower().replace("-", "_")
         resolved = _RAW_FRAME_ALIASES.get(stored)
         if resolved is None:
             raise ValueError(f"{path} declares unsupported {key}={stored!r}.")
         return resolved
-    if vessel_key in {"raw_vessel_code_mm", "uniform_arc_vessel_code_mm"}:
+    if vessel_key in _RAW_VESSEL_AUTO_KEYS:
         return "native"
     raise ValueError(
         f"Cannot infer the coordinate frame of {path} key {vessel_key!r}; "
@@ -1134,54 +1221,101 @@ def load_raw_vessel_code(
 
     source = Path(path).expanduser().resolve()
     with np.load(source, allow_pickle=False) as data:
-        if vessel_key not in data.files:
-            raise KeyError(
-                f"{source} lacks raw vessel key {vessel_key!r}; available: "
-                f"{sorted(data.files)}"
-            )
-        vessel = np.asarray(data[vessel_key], dtype=np.float64)
+        resolved_vessel_key = _resolve_raw_vessel_key(data, vessel_key, source)
+        vessel = np.asarray(data[resolved_vessel_key], dtype=np.float64)
+        single_branch_input = vessel.ndim == 2
+        if single_branch_input and vessel.shape[-1] >= 4:
+            vessel = vessel[None, ...]
         if vessel.ndim != 3 or vessel.shape[-1] < 4:
             raise ValueError(
-                f"{source} {vessel_key} must have shape [M,N,4+], got "
-                f"{vessel.shape}. XYZ plus radius are required to compute Dice."
+                f"{source} {resolved_vessel_key} must have shape [M,N,4+] "
+                f"or [N,4+], got {vessel.shape}. XYZ plus radius are required "
+                "to compute Dice."
             )
         vessel = vessel[..., :4].copy()
         if scale_to_mm is None:
-            if vessel_key.endswith("_mm"):
-                scale = 1.0
-            elif "input_scale_to_mm" in data.files:
-                scale = float(np.asarray(data["input_scale_to_mm"]).reshape(()))
+            schema_scale = _RAW_VESSEL_SCHEMA_SCALE_TO_MM.get(
+                resolved_vessel_key
+            )
+            suffix_scale = 1.0 if resolved_vessel_key.endswith("_mm") else None
+            expected_scale = (
+                schema_scale if schema_scale is not None else suffix_scale
+            )
+            needs_metadata_scale = (
+                expected_scale is None or resolved_vessel_key == "artery"
+            )
+            metadata_scale = (
+                float(np.asarray(data["input_scale_to_mm"]).reshape(()))
+                if needs_metadata_scale and "input_scale_to_mm" in data.files
+                else None
+            )
+            if expected_scale is not None:
+                scale = expected_scale
+                scale_source = (
+                    f"verified_schema:{resolved_vessel_key}"
+                    if schema_scale is not None
+                    else "millimetre_key_suffix"
+                )
+                # input_scale_to_mm in transformed Stage-2 targets describes
+                # the metre-valued `artery` field, so it may legitimately be
+                # 1000 beside a separate *_mm array. Cross-check it only when
+                # the selected field is artery; fixed-unit mm keys ignore it.
+                if (
+                    resolved_vessel_key == "artery"
+                    and metadata_scale is not None
+                    and not math.isclose(
+                        metadata_scale, scale, rel_tol=0.0, abs_tol=1e-12
+                    )
+                ):
+                    raise ValueError(
+                        f"{source} input_scale_to_mm={metadata_scale} conflicts "
+                        f"with the verified {resolved_vessel_key!r} scale "
+                        f"{scale}."
+                    )
+            elif metadata_scale is not None:
+                scale = metadata_scale
+                scale_source = "npz_metadata:input_scale_to_mm"
             else:
                 raise ValueError(
-                    f"Units of {source} {vessel_key!r} are ambiguous; pass "
+                    f"Units of {source} {resolved_vessel_key!r} are ambiguous; "
+                    "pass "
                     "--raw-scale-to-mm."
                 )
         else:
             scale = float(scale_to_mm)
+            scale_source = "cli_override"
         if not math.isfinite(scale) or scale <= 0.0:
             raise ValueError("raw vessel scale-to-mm must be positive and finite.")
         vessel *= scale
 
-        if branch_exists_key in data.files:
-            branch_exists = np.asarray(
-                data[branch_exists_key], dtype=np.bool_
-            ).reshape(-1)
-        else:
-            branch_exists = np.ones(vessel.shape[0], dtype=np.bool_)
-        if branch_exists.shape != (vessel.shape[0],):
-            raise ValueError(
-                f"{source} {branch_exists_key} must have shape "
-                f"({vessel.shape[0]},), got {branch_exists.shape}."
-            )
-
         if point_valid_key in data.files:
             point_valid = np.asarray(data[point_valid_key], dtype=np.bool_)
+            if single_branch_input and point_valid.shape == vessel.shape[1:2]:
+                point_valid = point_valid[None, :]
+            point_valid_source = f"npz:{point_valid_key}"
         else:
             point_valid = np.isfinite(vessel).all(axis=-1) & (vessel[..., 3] > 0)
+            point_valid_source = "inferred_finite_positive_radius"
         if point_valid.shape != vessel.shape[:2]:
             raise ValueError(
                 f"{source} {point_valid_key} must have shape {vessel.shape[:2]}, "
                 f"got {point_valid.shape}."
+            )
+        if branch_exists_key in data.files:
+            branch_exists = np.asarray(
+                data[branch_exists_key], dtype=np.bool_
+            ).reshape(-1)
+            branch_exists_source = f"npz:{branch_exists_key}"
+        else:
+            # Legacy Stage-2 files pad artery to a fixed branch capacity with
+            # all-zero rows. Infer branch existence from their valid points so
+            # padded slots do not become empty ground-truth branches.
+            branch_exists = np.count_nonzero(point_valid, axis=1) >= 2
+            branch_exists_source = "inferred_at_least_two_valid_points"
+        if branch_exists.shape != (vessel.shape[0],):
+            raise ValueError(
+                f"{source} {branch_exists_key} must have shape "
+                f"({vessel.shape[0]},), got {branch_exists.shape}."
             )
         active = branch_exists[:, None] & point_valid
         if not np.any(active):
@@ -1193,7 +1327,7 @@ def load_raw_vessel_code(
         frame = _raw_frame(
             coordinate_frame,
             payload=data,
-            vessel_key=vessel_key,
+            vessel_key=resolved_vessel_key,
             path=source,
         )
         embedded = _embedded_case_id(data, source)
@@ -1204,7 +1338,11 @@ def load_raw_vessel_code(
         branch_exists=branch_exists,
         point_valid=point_valid,
         coordinate_frame=frame,
-        vessel_key=vessel_key,
+        vessel_key=resolved_vessel_key,
+        scale_to_mm=scale,
+        scale_source=scale_source,
+        branch_exists_source=branch_exists_source,
+        point_valid_source=point_valid_source,
     )
 
 
@@ -1311,6 +1449,10 @@ def _centered_raw_vessel(
         point_valid=raw.point_valid,
         coordinate_frame="projection_centered",
         vessel_key=raw.vessel_key,
+        scale_to_mm=raw.scale_to_mm,
+        scale_source=raw.scale_source,
+        branch_exists_source=raw.branch_exists_source,
+        point_valid_source=raw.point_valid_source,
     )
 
 
@@ -1340,6 +1482,10 @@ def _raw_vessel_in_frame(
         point_valid=raw.point_valid,
         coordinate_frame="native",
         vessel_key=raw.vessel_key,
+        scale_to_mm=raw.scale_to_mm,
+        scale_source=raw.scale_source,
+        branch_exists_source=raw.branch_exists_source,
+        point_valid_source=raw.point_valid_source,
     )
 
 
@@ -2202,7 +2348,14 @@ def _evaluate_case(
         "view_indices_audit": view_indices_audit,
         "projection_center_offset_xyz_mm": center_offset.tolist(),
         "projection_center_offset_source": center_offset_source,
+        "raw_vessel_key": raw.vessel_key,
+        "raw_vessel_scale_to_mm": raw.scale_to_mm,
+        "raw_vessel_scale_source": raw.scale_source,
         "raw_vessel_coordinate_frame": raw.coordinate_frame,
+        "raw_branch_exists_source": raw.branch_exists_source,
+        "raw_point_valid_source": raw.point_valid_source,
+        "raw_active_branches": int(np.count_nonzero(raw.branch_exists)),
+        "raw_active_points": int(np.count_nonzero(raw.active_point_mask)),
         "ground_truth_mask_source": ground_truth_source,
         "raw_centerline_in_ground_truth_mask_fraction": float(
             np.count_nonzero(
@@ -2374,12 +2527,19 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
         requested_method=args.prediction_method,
         prediction_key=args.prediction_key,
         case_id_override=args.case_id_override,
+        artery=args.artery,
+    )
+    raw_discovery_keys = (
+        _RAW_VESSEL_AUTO_KEYS
+        if args.raw_vessel_key == "auto"
+        else (args.raw_vessel_key,)
     )
     raw_paths = _discover_npz_by_key(
         args.raw_vessel_dir,
-        required_keys=(args.raw_vessel_key,),
+        required_keys=raw_discovery_keys,
         label="raw vessel",
         preferred_filename=args.raw_preferred_filename,
+        artery=args.artery,
     )
     projection_paths = (
         None
@@ -2391,6 +2551,7 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
                 "projection_center_offset_xyz_mm",
             ),
             label="projection",
+            artery=args.artery,
         )
     )
     ground_truth_paths = (
@@ -2400,6 +2561,7 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
             args.ground_truth_volume_dir,
             required_keys=("vol",),
             label="ground-truth volume",
+            artery=args.artery,
         )
     )
     artery_audit = {
@@ -2530,8 +2692,18 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
             if ground_truth_paths is not None
             else "raw_vessel_code_radius_tube_plus_centerline_union"
         ),
-        "ground_truth_centerline_source": args.raw_vessel_key,
+        "ground_truth_centerline_source": (
+            "per_case_auto_resolved_raw_vessel_key"
+            if args.raw_vessel_key == "auto"
+            else args.raw_vessel_key
+        ),
         "raw_vessel_key": args.raw_vessel_key,
+        "raw_vessel_key_requested": args.raw_vessel_key,
+        "raw_vessel_auto_keys": (
+            list(_RAW_VESSEL_AUTO_KEYS)
+            if args.raw_vessel_key == "auto"
+            else None
+        ),
         "raw_branch_exists_key": args.branch_exists_key,
         "raw_point_valid_key": args.point_valid_key,
         "raw_coordinate_frame_requested": args.raw_coordinate_frame,
@@ -2785,7 +2957,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar=("X_MAX", "Y_MAX", "Z_MAX"),
         help="Shared 0.5-mm evaluation-grid exclusive upper boundary.",
     )
-    parser.add_argument("--raw-vessel-key", default="raw_vessel_code_mm")
+    parser.add_argument(
+        "--raw-vessel-key",
+        default="auto",
+        help=(
+            "Raw XYZ+radius array key. The default 'auto' prefers "
+            "raw_vessel_code_mm, then uniform_arc_vessel_code_mm, then the "
+            "native ImageCAS branches_xyzr_resampled field, then the legacy "
+            "Stage-2 artery field. Stage-2 artery values are automatically "
+            "converted from metres to millimetres."
+        ),
+    )
     parser.add_argument("--branch-exists-key", default="branch_exists")
     parser.add_argument("--point-valid-key", default="point_valid_mask")
     parser.add_argument(

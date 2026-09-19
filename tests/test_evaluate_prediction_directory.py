@@ -11,8 +11,11 @@ pytest.importorskip("scipy")
 pytest.importorskip("skimage")
 
 from src.evaluate_prediction_directory import (
+    _RAW_VESSEL_AUTO_KEYS,
+    _discover_npz_by_key,
     _discover_prediction_npzs,
     _load_normalized_prediction,
+    load_raw_vessel_code,
     main,
 )
 
@@ -162,6 +165,37 @@ def _save_raw_vessel(
     np.savez_compressed(path, **payload)
 
 
+def _save_legacy_stage2_artery(
+    path: Path,
+    points_xyz_mm: np.ndarray,
+    *,
+    radius_mm: float,
+    center_offset_xyz_mm: tuple[float, float, float],
+    case_id: str = "1",
+    artery_type: str = "lca",
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    branch_capacity = 13 if artery_type == "lca" else 7
+    artery = np.zeros((branch_capacity, 200, 4), dtype=np.float32)
+    points = np.asarray(points_xyz_mm, dtype=np.float32)
+    artery[0, : len(points), :3] = points * np.float32(1.0e-3)
+    artery[0, : len(points), 3] = np.float32(radius_mm * 1.0e-3)
+    np.savez_compressed(
+        path,
+        sample_name=np.asarray(f"{artery_type}_{int(case_id):04d}"),
+        vessel_type=np.asarray(artery_type),
+        artery=artery,
+        projection_center_offset=(
+            np.asarray(center_offset_xyz_mm, dtype=np.float32)
+            * np.float32(1.0e-3)
+        ),
+        input_scale_to_mm=np.asarray(1000.0, dtype=np.float32),
+        # Real legacy files contain this pickle-backed field. The evaluator
+        # must ignore it and use the safe sample_name instead.
+        source_case_id=np.asarray([case_id], dtype=object),
+    )
+
+
 def _run_directory_evaluation(
     prediction_dir: Path,
     raw_vessel_dir: Path,
@@ -193,6 +227,139 @@ def _run_directory_evaluation(
         )
         == 0
     )
+
+
+def test_legacy_stage2_artery_is_auto_detected_without_pickle(tmp_path):
+    prediction_dir = tmp_path / "predictions"
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "metrics"
+    center_offset = np.asarray([10.0, 20.0, 30.0], dtype=np.float32)
+    centered_points = np.column_stack(
+        (
+            np.arange(-1.75, 1.5, 0.5, dtype=np.float32),
+            np.full(7, 0.25, dtype=np.float32),
+            np.full(7, 0.25, dtype=np.float32),
+        )
+    )
+    prediction = np.zeros((8, 8, 8), dtype=np.float32)
+    prediction[4, 4, :7] = 1.0
+    _save_prediction(prediction_dir / "validation" / "1.npz", prediction)
+    raw_path = raw_dir / "lca" / "lca_0001.npz"
+    _save_legacy_stage2_artery(
+        raw_path,
+        centered_points + center_offset[None, :],
+        radius_mm=0.24,
+        center_offset_xyz_mm=tuple(float(value) for value in center_offset),
+    )
+    _save_legacy_stage2_artery(
+        raw_dir / "rca" / "rca_0001.npz",
+        centered_points + center_offset[None, :],
+        radius_mm=0.24,
+        center_offset_xyz_mm=tuple(float(value) for value in center_offset),
+        artery_type="rca",
+    )
+
+    discovered = _discover_npz_by_key(
+        raw_dir,
+        required_keys=_RAW_VESSEL_AUTO_KEYS,
+        label="raw vessel",
+        artery="lca",
+    )
+    assert discovered == {"1": raw_path.resolve()}
+    raw = load_raw_vessel_code(
+        raw_path,
+        vessel_key="auto",
+        branch_exists_key="branch_exists",
+        point_valid_key="point_valid_mask",
+        coordinate_frame="auto",
+        scale_to_mm=None,
+    )
+    assert raw.case_id == "1"
+    assert raw.vessel_key == "artery"
+    assert raw.coordinate_frame == "native"
+    assert raw.scale_to_mm == 1000.0
+    assert raw.scale_source == "verified_schema:artery"
+    assert raw.branch_exists.tolist() == [True] + [False] * 12
+    assert int(raw.active_point_mask.sum()) == 7
+    np.testing.assert_allclose(
+        raw.vessel_xyzr_mm[0, :7, :3],
+        centered_points + center_offset[None, :],
+        atol=1e-5,
+    )
+
+    _run_directory_evaluation(prediction_dir, raw_dir, output_dir)
+
+    record = json.loads((output_dir / "per_case_metrics.json").read_text())[0]
+    assert record["raw_vessel_key"] == "artery"
+    assert record["raw_vessel_scale_to_mm"] == 1000.0
+    assert record["raw_vessel_scale_source"] == "verified_schema:artery"
+    assert record["projection_center_offset_source"] == "raw_vessel_npz"
+    assert record["raw_active_branches"] == 1
+    assert record["raw_active_points"] == 7
+    assert record["dice_3d"] == pytest.approx(1.0)
+    assert record["cldice_3d"] == pytest.approx(1.0)
+
+
+def test_native_imagecas_raw_key_is_auto_detected_in_millimetres(tmp_path):
+    path = tmp_path / "lca" / "31" / "vessel_code.npz"
+    path.parent.mkdir(parents=True)
+    vessel = np.asarray(
+        [[1.0, 2.0, 3.0, 0.5], [2.0, 2.0, 3.0, 0.4]],
+        dtype=np.float32,
+    )
+    np.savez_compressed(
+        path,
+        branches_xyzr_resampled=vessel,
+        branch_exists=np.asarray([True]),
+        point_valid_mask=np.asarray([True, True]),
+        # This Stage-2-style metadata describes the separate metre-valued
+        # artery field, not this fixed-mm raw array, and must not rescale it.
+        input_scale_to_mm=np.asarray(1000.0, dtype=np.float32),
+    )
+
+    raw = load_raw_vessel_code(
+        path,
+        vessel_key="auto",
+        branch_exists_key="branch_exists",
+        point_valid_key="point_valid_mask",
+        coordinate_frame="auto",
+        scale_to_mm=None,
+    )
+
+    assert raw.case_id == "31"
+    assert raw.vessel_key == "branches_xyzr_resampled"
+    assert raw.vessel_xyzr_mm.shape == (1, 2, 4)
+    assert raw.coordinate_frame == "native"
+    assert raw.scale_to_mm == 1.0
+    assert raw.branch_exists.tolist() == [True]
+    assert raw.point_valid.shape == (1, 2)
+    assert raw.point_valid.tolist() == [[True, True]]
+    np.testing.assert_allclose(raw.vessel_xyzr_mm[0], vessel)
+
+
+def test_legacy_artery_rejects_conflicting_scale_metadata(tmp_path):
+    path = tmp_path / "lca_0001.npz"
+    artery = np.zeros((13, 200, 4), dtype=np.float32)
+    artery[0, :2] = np.asarray(
+        [[0.001, 0.002, 0.003, 0.0005], [0.002, 0.002, 0.003, 0.0004]],
+        dtype=np.float32,
+    )
+    np.savez_compressed(
+        path,
+        sample_name=np.asarray("lca_0001"),
+        artery=artery,
+        input_scale_to_mm=np.asarray(1.0, dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="conflicts with the verified 'artery'"):
+        load_raw_vessel_code(
+            path,
+            vessel_key="auto",
+            branch_exists_key="branch_exists",
+            point_valid_key="point_valid_mask",
+            coordinate_frame="auto",
+            scale_to_mm=None,
+        )
 
 
 def test_exact_native_vessel_uses_offset_and_writes_complete_outputs(tmp_path):

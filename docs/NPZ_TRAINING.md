@@ -945,8 +945,11 @@ directories are searched recursively and paired by normalized case ID.
 case numbers. The evaluator rejects conflicting artery markers found in paths
 or scalar NPZ metadata and records how many files could be independently
 verified; the explicit flag remains the audit label for generic numeric-only
-layouts. `--prediction-method {auto,autocar,deepca,3dgrcar}` selects the input
-schema. New AutoCAR exports store `prediction_method=autocar`; auto mode first
+layouts. A shared root containing both `lca/<case>/...` and `rca/<case>/...`
+is filtered by this flag before case IDs are paired, so identical LCA/RCA case
+numbers do not collide. `--prediction-method` accepts `auto`, `autocar`,
+`deepca`, or `3dgrcar` and selects the input schema. New AutoCAR exports store
+`prediction_method=autocar`; auto mode first
 uses that tag and otherwise accepts only a unique schema signature. The
 resolved method, volume key, original frame, origin convention, grid spacing,
 checkpoint provenance, split provenance, and any missing metadata are written
@@ -956,9 +959,33 @@ ordered input pair `view_indices=[0,1]`. Use
 `[0,6]` predictions are rejected by the default run rather than mixed with the
 strict two-view result. `--allow-missing-view-indices` is an explicit escape
 hatch for externally audited third-party volumes that cannot carry this
-metadata. Raw targets must contain
-`raw_vessel_code_mm[M,N,4]` in `(x,y,z,radius)` order; `branch_exists` and
-`point_valid_mask` are honoured when present. New prediction exports embed
+metadata. Raw targets must provide sampled `(x,y,z,radius)` polylines. The
+default `--raw-vessel-key auto` resolves these verified schemas in order:
+
+1. `raw_vessel_code_mm` in millimetres;
+2. `uniform_arc_vessel_code_mm` in millimetres;
+3. native ImageCAS `branches_xyzr_resampled` in millimetres; or
+4. legacy Stage-2 `artery` in metres.
+
+Legacy Stage-2 projection files such as `lca_0001.npz` and `rca_0001.npz`
+can therefore be passed directly as the raw-vessel directory even though they
+do not contain `raw_vessel_code_mm`. For `artery`, the evaluator converts XYZ
+and radius by `1000`, treats the coordinates as native, uses
+`projection_center_offset` for centring, and ignores all-zero padded branches.
+This fallback evaluates against the stored rendered/resampled artery; it does
+not reconstruct the unavailable original raw point sampling. The resolved key
+and unit conversion are recorded per case.
+An unlabelled `projection_center_offset` follows the Stage-2 contract and is
+interpreted in metres independently of the vessel-array units. Non-Stage-2
+archives should store `projection_center_offset_xyz_mm` or an explicit
+`projection_center_offset_units` value instead.
+Pickle-backed legacy `source_case_id` metadata is not loaded; the safe
+`sample_name` or numeric path supplies the case ID. Arrays may have shape
+`[M,N,4+]` or `[N,4+]`. `branch_exists` and `point_valid_mask` are honoured
+when present; otherwise validity comes from finite positive-radius points and
+branch existence requires at least two such points. Use `--raw-vessel-key`
+and `--raw-scale-to-mm` only to override this registry for a nonstandard
+archive. New prediction exports embed
 `projection_center_offset_xyz_mm`, so the normal command needs only the saved
 prediction and raw-vessel directories. An offset embedded in the raw-vessel
 NPZ is also accepted and cross-checked. Use `--projection-dir` only as a
