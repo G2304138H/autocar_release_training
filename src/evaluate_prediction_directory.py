@@ -1,9 +1,10 @@
 """Offline graph and geometry evaluation for saved vessel-volume predictions.
 
-The evaluator does not load a checkpoint or require CUDA.  It scans a directory
-of AutoCAR-style prediction NPZ files, converts every thresholded volume to a
-26-connected centreline graph with EDT radii, and compares that graph with the
-same raw vessel-code reference used by the parametric evaluator.
+The evaluator does not load a checkpoint or require CUDA.  It accepts one NPZ
+file or a directory of AutoCAR, DeepCA, or 3DGR-CAR prediction NPZ files,
+normalizes their method-specific grid metadata, converts every thresholded
+volume to a 26-connected centreline graph with EDT radii, and compares that
+graph with the same raw vessel-code reference used by the parametric evaluator.
 
 All predictions are resampled onto one shared 0.5-mm lattice.  By default, the
 raw vessel code's XYZ+radius polylines are rasterized on that lattice and
@@ -30,8 +31,6 @@ import numpy as np
 from src.evaluate_npz import (
     _load_center_offset_mm,
     _load_ground_truth,
-    _load_prediction,
-    _resolve_prediction_grid,
     _scalar_text,
     _stable_sigmoid,
 )
@@ -44,6 +43,7 @@ from src.metrics import centerline_radius_errors, masked_dice_3d
 
 
 _EVALUATION_VOXEL_SIZE_MM = 0.5
+_PREDICTION_METHODS = ("autocar", "deepca", "3dgrcar")
 
 
 _RAW_FRAME_ALIASES = {
@@ -76,6 +76,257 @@ class RawVesselCode:
     @property
     def active_point_mask(self) -> np.ndarray:
         return self.branch_exists[:, None] & self.point_valid
+
+
+@dataclass(frozen=True)
+class NormalizedPrediction:
+    """One method-specific prediction represented on a physical ZYX grid."""
+
+    path: Path
+    method: str
+    method_resolution: str
+    volume_key: str
+    volume_zyx: np.ndarray
+    source_grid: VoxelGrid
+    coordinate_frame: str
+    coordinate_frame_source: str
+    origin_convention: str
+    origin_convention_source: str
+    metadata: Mapping[str, Any]
+    volume_is_binary_mask: bool
+    checkpoint: str | None
+
+
+def _metadata_scalar_value(data: Any, key: str, path: Path) -> Any:
+    value = np.asarray(data[key])
+    if value.size != 1:
+        raise ValueError(f"{path} metadata {key!r} must be scalar.")
+    return value.reshape(()).item()
+
+
+def _canonical_prediction_method(raw: Any, *, path: Path) -> str:
+    value = _scalar_text(raw).strip().casefold().replace("-", "").replace("_", "")
+    aliases = {
+        "autocar": "autocar",
+        "autocad": "autocar",
+        "deepca": "deepca",
+        "3dgrcar": "3dgrcar",
+        "threedgrcar": "3dgrcar",
+    }
+    if value not in aliases:
+        raise ValueError(
+            f"{path} declares unsupported prediction_method={value!r}; "
+            f"supported methods are {list(_PREDICTION_METHODS)}."
+        )
+    return aliases[value]
+
+
+def _detect_prediction_method(data: Any, path: Path) -> str:
+    keys = set(data.files)
+    matches: list[str] = []
+    if {
+        "prediction_volume_zyx",
+        "bbox_min_xyz_mm",
+        "voxel_size_mm",
+    }.issubset(keys):
+        matches.append("autocar")
+    if {"vol", "spacing", "origin"}.issubset(keys):
+        matches.append("deepca")
+    if {
+        "prediction_mask_zyx",
+        "ground_truth_spacing_xyz_m",
+        "ground_truth_origin_xyz_m",
+    }.issubset(keys):
+        matches.append("3dgrcar")
+    if len(matches) != 1:
+        raise ValueError(
+            f"Cannot uniquely detect the prediction method for {path}; "
+            f"schema matches={matches}, available keys={sorted(keys)}. Pass "
+            "--prediction-method and ensure the method's grid metadata is present."
+        )
+    return matches[0]
+
+
+def _resolve_prediction_method(
+    data: Any, path: Path, requested_method: str
+) -> tuple[str, str]:
+    embedded = (
+        None
+        if "prediction_method" not in data.files
+        else _canonical_prediction_method(
+            _metadata_scalar_value(data, "prediction_method", path), path=path
+        )
+    )
+    requested = None if requested_method == "auto" else requested_method
+    if requested is not None and embedded is not None and requested != embedded:
+        raise ValueError(
+            f"{path} declares prediction_method={embedded!r}, which conflicts "
+            f"with --prediction-method={requested!r}."
+        )
+    if requested is not None:
+        return requested, "cli"
+    if embedded is not None:
+        return embedded, "npz_metadata"
+    return _detect_prediction_method(data, path), "schema_detection"
+
+
+def _validated_volume(data: Any, key: str, path: Path) -> np.ndarray:
+    if key not in data.files:
+        raise KeyError(
+            f"Prediction NPZ {path} has no {key!r} key; available keys: "
+            f"{sorted(data.files)}"
+        )
+    volume = np.asarray(data[key]).squeeze()
+    if volume.ndim != 3:
+        raise ValueError(
+            f"{path} {key!r} must reduce to one 3D volume, got {volume.shape}."
+        )
+    if not (
+        np.issubdtype(volume.dtype, np.number)
+        or np.issubdtype(volume.dtype, np.bool_)
+    ):
+        raise ValueError(f"{path} {key!r} must contain numeric values.")
+    if not np.isfinite(volume).all():
+        raise ValueError(f"{path} {key!r} contains NaN or infinite values.")
+    return volume
+
+
+def _xyz_vector(
+    data: Any,
+    key: str,
+    path: Path,
+    *,
+    scale_to_mm: float = 1.0,
+    positive: bool = False,
+) -> np.ndarray:
+    if key not in data.files:
+        raise ValueError(f"{path} is missing required grid metadata {key!r}.")
+    value = np.asarray(data[key], dtype=np.float64)
+    if value.shape != (3,) or not np.isfinite(value).all():
+        raise ValueError(f"{path} {key!r} must contain three finite XYZ values.")
+    value = value * float(scale_to_mm)
+    if positive and np.any(value <= 0.0):
+        raise ValueError(f"{path} {key!r} must contain positive values.")
+    return value
+
+
+def _stored_text(data: Any, path: Path, keys: Sequence[str]) -> tuple[str, str] | None:
+    for key in keys:
+        if key in data.files:
+            value = _scalar_text(_metadata_scalar_value(data, key, path)).strip()
+            if not value:
+                raise ValueError(f"{path} metadata {key!r} cannot be empty.")
+            return value, key
+    return None
+
+
+def _resolve_prediction_frame(
+    data: Any,
+    path: Path,
+    *,
+    method: str,
+    requested: str,
+    schema_default: tuple[str, str] | None = None,
+) -> tuple[str, str]:
+    explicit = requested.strip().lower().replace("-", "_")
+    stored = _stored_text(
+        data,
+        path,
+        ("prediction_coordinate_frame", "volume_coordinate_frame", "coordinate_frame"),
+    )
+    stored_frame: str | None = None
+    if stored is not None:
+        stored_frame = _RAW_FRAME_ALIASES.get(
+            stored[0].strip().lower().replace("-", "_")
+        )
+        if stored_frame is None:
+            raise ValueError(
+                f"{path} declares unsupported {stored[1]}={stored[0]!r}."
+            )
+    if explicit != "auto":
+        resolved = _RAW_FRAME_ALIASES.get(explicit)
+        if resolved is None:
+            raise ValueError(
+                f"Unsupported --prediction-coordinate-frame={requested!r}."
+            )
+        if stored_frame is not None and resolved != stored_frame:
+            raise ValueError(
+                f"{path} coordinate frame {stored_frame!r} conflicts with "
+                f"--prediction-coordinate-frame={resolved!r}."
+            )
+        return resolved, "cli"
+    if stored_frame is not None:
+        return stored_frame, f"npz_metadata:{stored[1]}"
+    if schema_default is not None:
+        return schema_default
+    if method == "autocar":
+        return "projection_centered", "autocar_schema_default"
+    if method == "deepca":
+        return "native", "deepca_exporter_contract"
+    raise ValueError(
+        f"{path} does not declare the physical coordinate frame of its {method} "
+        "volume. Pass --prediction-coordinate-frame native or "
+        "--prediction-coordinate-frame projection-centered; this cannot be "
+        "safely inferred from an origin alone."
+    )
+
+
+def _resolve_origin_convention(
+    data: Any,
+    path: Path,
+    *,
+    method: str,
+    requested: str,
+    schema_default: tuple[str, str] | None = None,
+) -> tuple[str, str]:
+    aliases = {
+        "lower_bound": "lower_bound",
+        "lower_boundary": "lower_bound",
+        "voxel_center": "voxel_center",
+        "first_voxel_center": "voxel_center",
+        "first_voxel_centre": "voxel_center",
+    }
+    explicit = requested.strip().lower().replace("-", "_")
+    stored = _stored_text(
+        data,
+        path,
+        ("prediction_origin_convention", "origin_convention"),
+    )
+    stored_convention: str | None = None
+    if stored is not None:
+        stored_convention = aliases.get(
+            stored[0].strip().lower().replace("-", "_")
+        )
+        if stored_convention is None:
+            raise ValueError(
+                f"{path} declares unsupported {stored[1]}={stored[0]!r}."
+            )
+    if explicit != "auto":
+        resolved = aliases.get(explicit)
+        if resolved is None:
+            raise ValueError(
+                f"Unsupported --prediction-origin-convention={requested!r}."
+            )
+        if stored_convention is not None and resolved != stored_convention:
+            raise ValueError(
+                f"{path} origin convention {stored_convention!r} conflicts "
+                f"with --prediction-origin-convention={resolved!r}."
+            )
+        return resolved, "cli"
+    if stored_convention is not None:
+        return stored_convention, f"npz_metadata:{stored[1]}"
+    if schema_default is not None:
+        return schema_default
+    if method == "autocar":
+        return "lower_bound", "autocar_bbox_schema"
+    if method == "deepca":
+        return "voxel_center", "deepca_exporter_contract"
+    raise ValueError(
+        f"{path} does not state whether its {method} origin is the lower voxel "
+        "boundary or the first voxel centre. Pass "
+        "--prediction-origin-convention lower-bound or "
+        "--prediction-origin-convention voxel-center."
+    )
 
 
 def _canonical_case_id(raw: Any) -> str:
@@ -121,6 +372,572 @@ def _npz_case_id(path: Path) -> str:
     with np.load(path, allow_pickle=False) as data:
         embedded = _embedded_case_id(data, path)
     return embedded if embedded is not None else _case_id_from_path(path)
+
+
+def _prediction_case_id_from_path(path: Path) -> str:
+    """Infer only an isolated numeric case token, never the ``3`` in 3DGR."""
+
+    if path.parent.name.isdigit():
+        return str(int(path.parent.name))
+    matches = re.findall(r"(?:^|[_-])(\d+)(?=$|[_-])", path.stem)
+    if len(matches) == 1:
+        return str(int(matches[0]))
+    raise ValueError(
+        f"{path} contains no unambiguous case_id metadata or isolated numeric "
+        "case token. For one prediction NPZ, pass --case-id-override."
+    )
+
+
+def _prediction_case_id(
+    data: Any,
+    path: Path,
+    *,
+    case_id_override: str | None,
+) -> tuple[str, str]:
+    embedded = _embedded_case_id(data, path)
+    override = (
+        None
+        if case_id_override is None
+        else _canonical_case_id(case_id_override)
+    )
+    if embedded is not None and override is not None and embedded != override:
+        raise ValueError(
+            f"{path} embeds case_id={embedded!r}, which conflicts with "
+            f"--case-id-override={override!r}."
+        )
+    if embedded is not None:
+        return embedded, "npz_metadata"
+    if override is not None:
+        return override, "cli_override"
+    return _prediction_case_id_from_path(path), "path"
+
+
+def _default_prediction_key(method: str) -> str:
+    return {
+        "autocar": "prediction_volume_zyx",
+        "deepca": "vol",
+        "3dgrcar": "prediction_mask_zyx",
+    }[method]
+
+
+def _discover_prediction_npzs(
+    source_path: Path,
+    *,
+    requested_method: str,
+    prediction_key: str | None,
+    case_id_override: str | None,
+) -> dict[str, Path]:
+    source = Path(source_path).expanduser().resolve()
+    if source.is_file():
+        if source.suffix.lower() != ".npz":
+            raise ValueError(f"Prediction file must be .npz: {source}")
+        paths = [source]
+        is_single_file = True
+    elif source.is_dir():
+        paths = sorted(source.rglob("*.npz"))
+        is_single_file = False
+    else:
+        raise FileNotFoundError(
+            f"Prediction file or directory does not exist: {source}"
+        )
+    if case_id_override is not None and not is_single_file:
+        raise ValueError(
+            "--case-id-override is only valid when --prediction-dir points "
+            "to one NPZ file."
+        )
+    candidates: dict[str, list[Path]] = {}
+    inspection_errors: list[str] = []
+    for path in paths:
+        try:
+            with np.load(path, allow_pickle=False) as data:
+                keys = set(data.files)
+                if requested_method == "auto":
+                    looks_like_prediction = (
+                        "prediction_method" in keys
+                        or {
+                            "prediction_volume_zyx",
+                            "bbox_min_xyz_mm",
+                            "voxel_size_mm",
+                        }.issubset(keys)
+                        or {"vol", "spacing", "origin"}.issubset(keys)
+                        or {
+                            "prediction_mask_zyx",
+                            "ground_truth_spacing_xyz_m",
+                            "ground_truth_origin_xyz_m",
+                        }.issubset(keys)
+                    )
+                else:
+                    expected_key = prediction_key or _default_prediction_key(
+                        requested_method
+                    )
+                    looks_like_prediction = (
+                        expected_key in keys or "prediction_method" in keys
+                    )
+                if not looks_like_prediction:
+                    continue
+                method, _ = _resolve_prediction_method(
+                    data, path, requested_method
+                )
+                key = prediction_key or _default_prediction_key(method)
+                if key not in data.files:
+                    if is_single_file:
+                        raise KeyError(
+                            f"{path} has no {key!r} volume for method {method}; "
+                            f"available keys: {sorted(data.files)}"
+                        )
+                    continue
+                case_id, _ = _prediction_case_id(
+                    data,
+                    path,
+                    case_id_override=case_id_override,
+                )
+        except (OSError, ValueError, KeyError) as error:
+            if is_single_file:
+                raise
+            inspection_errors.append(f"{path}: {error}")
+            continue
+        candidates.setdefault(case_id, []).append(path)
+    if inspection_errors:
+        raise ValueError(
+            "Malformed or ambiguous prediction NPZ files were found: "
+            + " | ".join(inspection_errors[:5])
+        )
+    if not candidates:
+        raise FileNotFoundError(
+            f"No {requested_method} prediction NPZ files were found under "
+            f"{source}."
+        )
+    result: dict[str, Path] = {}
+    for case_id, case_paths in candidates.items():
+        if len(case_paths) != 1:
+            raise ValueError(
+                f"Multiple prediction files map to case {case_id}: "
+                + ", ".join(str(path) for path in case_paths)
+            )
+        result[case_id] = case_paths[0]
+    return result
+
+
+def _common_prediction_metadata(data: Any, path: Path) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    embedded_case = _embedded_case_id(data, path)
+    if embedded_case is not None:
+        metadata["case_id"] = embedded_case
+    for key in ("dataset_split", "evaluation_role"):
+        if key in data.files:
+            metadata[key] = _scalar_text(
+                _metadata_scalar_value(data, key, path)
+            )
+    if "threshold" in data.files:
+        threshold = float(_metadata_scalar_value(data, "threshold", path))
+        if not math.isfinite(threshold):
+            raise ValueError(f"{path} threshold must be finite.")
+        metadata["threshold"] = threshold
+    checkpoint = _stored_text(
+        data,
+        path,
+        ("checkpoint", "checkpoint_path", "model_checkpoint"),
+    )
+    if checkpoint is not None:
+        metadata["checkpoint"] = checkpoint[0]
+        metadata["checkpoint_metadata_key"] = checkpoint[1]
+    if "view_indices" in data.files:
+        raw = np.asarray(data["view_indices"])
+        try:
+            values = raw.astype(np.int64)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"{path} view_indices must contain integers."
+            ) from error
+        if (
+            values.ndim != 1
+            or values.size == 0
+            or not np.array_equal(raw, values)
+        ):
+            raise ValueError(
+                f"{path} view_indices must be a non-empty 1D integer array."
+            )
+        metadata["view_indices"] = [int(value) for value in values]
+    if "projection_center_offset_xyz_mm" in data.files:
+        metadata["projection_center_offset_xyz_mm"] = _xyz_vector(
+            data, "projection_center_offset_xyz_mm", path
+        ).tolist()
+    elif "projection_center_offset_xyz_m" in data.files:
+        metadata["projection_center_offset_xyz_mm"] = _xyz_vector(
+            data,
+            "projection_center_offset_xyz_m",
+            path,
+            scale_to_mm=1000.0,
+        ).tolist()
+    return metadata
+
+
+def _axis_order(data: Any, path: Path, *, method: str, key: str) -> str:
+    stored = _stored_text(data, path, ("volume_axis_order", "axis_order"))
+    if stored is None:
+        if key.endswith("_zyx") or method == "3dgrcar":
+            return "zyx"
+        raise ValueError(
+            f"{path} does not declare axis_order for volume key {key!r}."
+        )
+    value = stored[0].casefold()
+    if value not in {"xyz", "zyx"}:
+        raise ValueError(
+            f"{path} {stored[1]} must be 'xyz' or 'zyx', got {value!r}."
+        )
+    return value
+
+
+def _to_zyx(volume: np.ndarray, axis_order: str) -> np.ndarray:
+    result = volume.transpose(2, 1, 0) if axis_order == "xyz" else volume
+    return np.ascontiguousarray(result)
+
+
+def _lower_bound_origin(
+    stored_origin_xyz_mm: np.ndarray,
+    spacing_xyz_mm: np.ndarray,
+    convention: str,
+) -> np.ndarray:
+    if convention == "lower_bound":
+        return stored_origin_xyz_mm
+    if convention == "voxel_center":
+        return stored_origin_xyz_mm - 0.5 * spacing_xyz_mm
+    raise AssertionError(f"Unexpected origin convention {convention!r}.")
+
+
+def _resolve_3dgrcar_alignment(
+    data: Any, path: Path, requested: str
+) -> tuple[str, str]:
+    aliases = {
+        "physical": "physical",
+        "same_grid": "same_grid",
+        "samegrid": "same_grid",
+    }
+    stored = _stored_text(
+        data,
+        path,
+        ("ground_truth_alignment", "prediction_grid_alignment"),
+    )
+    stored_value: str | None = None
+    if stored is not None:
+        stored_value = aliases.get(
+            stored[0].strip().casefold().replace("-", "_")
+        )
+        if stored_value is None:
+            raise ValueError(
+                f"{path} declares unsupported {stored[1]}={stored[0]!r}."
+            )
+    explicit = requested.strip().casefold().replace("-", "_")
+    if explicit != "auto":
+        resolved = aliases.get(explicit)
+        if resolved is None:
+            raise ValueError(
+                f"Unsupported --3dgrcar-alignment={requested!r}."
+            )
+        if stored_value is not None and stored_value != resolved:
+            raise ValueError(
+                f"{path} declares 3DGR-CAR alignment {stored_value!r}, which "
+                f"conflicts with --3dgrcar-alignment={resolved!r}."
+            )
+        return resolved, "cli"
+    if stored_value is not None:
+        return stored_value, f"npz_metadata:{stored[1]}"
+    raise ValueError(
+        f"{path} omits 3DGR-CAR ground-truth alignment mode. Its "
+        "ground_truth_spacing/origin describe the saved prediction grid only "
+        "for same-grid evaluation; in physical mode the saved mask remains on "
+        "the centred reconstruction grid. Pass --3dgrcar-alignment physical "
+        "or --3dgrcar-alignment same-grid."
+    )
+
+
+def _load_normalized_prediction(
+    path: Path,
+    *,
+    requested_method: str,
+    prediction_key: str | None,
+    coordinate_frame: str,
+    origin_convention: str,
+    three_dgrcar_alignment: str,
+    case_id_override: str | None,
+) -> NormalizedPrediction:
+    source = Path(path).expanduser().resolve()
+    with np.load(source, allow_pickle=False) as data:
+        method, method_resolution = _resolve_prediction_method(
+            data, source, requested_method
+        )
+        key = prediction_key or _default_prediction_key(method)
+        raw_volume = _validated_volume(data, key, source)
+        if (
+            method == "3dgrcar" and key == "prediction_mask_zyx"
+        ) or (method == "deepca" and key == "vol"):
+            unique = np.unique(raw_volume)
+            if not np.all(np.isin(unique, (0, 1))):
+                raise ValueError(
+                    f"{source} {key} is expected to be a binary mask but has "
+                    f"values={unique[:10].tolist()}."
+                )
+        axis_order = _axis_order(data, source, method=method, key=key)
+        volume = _to_zyx(raw_volume, axis_order)
+        alignment: str | None = None
+        alignment_source: str | None = None
+        frame_default: tuple[str, str] | None = None
+        convention_default: tuple[str, str] | None = None
+        if method == "3dgrcar":
+            alignment, alignment_source = _resolve_3dgrcar_alignment(
+                data, source, three_dgrcar_alignment
+            )
+            if alignment == "physical":
+                frame_default = (
+                    "projection_centered",
+                    "3dgrcar_physical_alignment_contract",
+                )
+            else:
+                frame_default = (
+                    "native",
+                    "3dgrcar_same_grid_alignment_contract",
+                )
+            convention_default = (
+                "voxel_center",
+                "3dgrcar_exporter_contract",
+            )
+        frame, frame_source = _resolve_prediction_frame(
+            data,
+            source,
+            method=method,
+            requested=coordinate_frame,
+            schema_default=frame_default,
+        )
+        convention, convention_source = _resolve_origin_convention(
+            data,
+            source,
+            method=method,
+            requested=origin_convention,
+            schema_default=convention_default,
+        )
+        if method == "3dgrcar" and frame_default is not None:
+            if frame != frame_default[0]:
+                raise ValueError(
+                    f"{source} 3DGR-CAR {alignment} alignment requires "
+                    f"prediction frame {frame_default[0]!r}, not {frame!r}."
+                )
+            if convention != "voxel_center":
+                raise ValueError(
+                    f"{source} 3DGR-CAR exporter origins describe the first "
+                    "voxel centre; lower-bound interpretation is invalid."
+                )
+        metadata = _common_prediction_metadata(data, source)
+        case_id, case_id_source = _prediction_case_id(
+            data,
+            source,
+            case_id_override=case_id_override,
+        )
+        metadata["case_id"] = case_id
+        metadata["case_id_source"] = case_id_source
+        metadata["volume_axis_order"] = axis_order
+        if alignment is not None:
+            metadata["3dgrcar_alignment"] = alignment
+            metadata["3dgrcar_alignment_source"] = alignment_source
+
+        if method == "autocar":
+            if "voxel_size_mm" not in data.files:
+                raise ValueError(
+                    f"{source} is missing AutoCAR voxel_size_mm metadata."
+                )
+            size = float(
+                _metadata_scalar_value(data, "voxel_size_mm", source)
+            )
+            if not math.isfinite(size) or size <= 0.0:
+                raise ValueError(f"{source} voxel_size_mm must be positive.")
+            spacing = np.full(3, size, dtype=np.float64)
+            stored_origin = _xyz_vector(data, "bbox_min_xyz_mm", source)
+            units_source = "npz_mm"
+        elif method == "deepca":
+            spacing = _xyz_vector(
+                data, "spacing", source, positive=True
+            )
+            stored_origin = _xyz_vector(data, "origin", source)
+            units_source = "deepca_exporter_contract_mm"
+        else:
+            if alignment == "same_grid":
+                spacing = _xyz_vector(
+                    data,
+                    "ground_truth_spacing_xyz_m",
+                    source,
+                    scale_to_mm=1000.0,
+                    positive=True,
+                )
+                stored_origin = _xyz_vector(
+                    data,
+                    "ground_truth_origin_xyz_m",
+                    source,
+                    scale_to_mm=1000.0,
+                )
+                units_source = "3dgrcar_same_grid_gt_metadata_metres"
+            else:
+                center_offset = _xyz_vector(
+                    data,
+                    "projection_center_offset_xyz_m",
+                    source,
+                    scale_to_mm=1000.0,
+                )
+                shift_zyx = _xyz_vector(
+                    data,
+                    "applied_prediction_shift_zyx_voxels",
+                    source,
+                )
+                offset_zyx = center_offset[::-1]
+                nonzero_shift = np.abs(shift_zyx) > 1e-12
+                nonzero_offset = np.abs(offset_zyx) > 1e-12
+                if np.any(nonzero_shift != nonzero_offset):
+                    raise ValueError(
+                        f"{source} physical-mode projection offset and voxel "
+                        "shift disagree on which axes were translated; the "
+                        "prediction-grid spacing cannot be recovered safely."
+                    )
+                usable = nonzero_shift & nonzero_offset
+                if not np.any(usable):
+                    raise ValueError(
+                        f"{source} cannot recover its physical-mode "
+                        "reconstruction spacing from projection offset/shift. "
+                        "Re-export volume_extent metadata."
+                    )
+                recovered = offset_zyx[usable] / shift_zyx[usable]
+                if np.any(recovered <= 0.0):
+                    raise ValueError(
+                        f"{source} physical-mode projection offset and voxel "
+                        "shift have inconsistent signs; the prediction-grid "
+                        "spacing cannot be recovered safely."
+                    )
+                if not np.allclose(
+                    recovered,
+                    recovered[0],
+                    rtol=5e-5,
+                    atol=1e-6,
+                ):
+                    raise ValueError(
+                        f"{source} physical-mode spacing inferred from centre "
+                        f"offset/shift is inconsistent: {recovered.tolist()}."
+                    )
+                spacing = np.full(3, recovered[0], dtype=np.float64)
+                extent_xyz = (
+                    np.asarray(volume.shape[::-1], dtype=np.float64) - 1.0
+                ) * spacing
+                stored_origin = -0.5 * extent_xyz
+                units_source = (
+                    "3dgrcar_physical_grid_derived_from_offset_and_shift"
+                )
+            for companion in (
+                "ground_truth_volume_zyx",
+                "ground_truth_mask_zyx",
+                "roi_mask_zyx",
+            ):
+                if companion in data.files and np.asarray(data[companion]).shape != volume.shape:
+                    raise ValueError(
+                        f"{source} {companion} shape does not match {key}: "
+                        f"{np.asarray(data[companion]).shape} versus {volume.shape}."
+                    )
+            if "applied_prediction_shift_zyx_voxels" in data.files:
+                shift = np.asarray(
+                    data["applied_prediction_shift_zyx_voxels"],
+                    dtype=np.float64,
+                )
+                if shift.shape != (3,) or not np.isfinite(shift).all():
+                    raise ValueError(
+                        f"{source} applied_prediction_shift_zyx_voxels must "
+                        "contain three finite values."
+                    )
+                metadata["applied_prediction_shift_zyx_voxels"] = shift.tolist()
+            metadata["axis_direction_sign_xyz"] = [1, 1, 1]
+            metadata["axis_direction_sign_source"] = (
+                "3dgrcar_exporter_default_not_embedded"
+            )
+        lower_origin = _lower_bound_origin(
+            stored_origin, spacing, convention
+        )
+        metadata["source_prediction_coordinate_frame"] = frame
+        metadata["source_prediction_coordinate_frame_source"] = frame_source
+        effective_frame = frame
+        effective_frame_source = frame_source
+        if frame == "native":
+            if method == "deepca":
+                inferred_center = stored_origin + 0.5 * (
+                    np.asarray(volume.shape[::-1], dtype=np.float64) - 1.0
+                ) * spacing
+                offset_source = "deepca_grid_center_exporter_contract"
+            else:
+                embedded_offset = metadata.get(
+                    "projection_center_offset_xyz_mm"
+                )
+                if embedded_offset is None:
+                    raise ValueError(
+                        f"{source} stores a native-frame {method} volume but "
+                        "does not provide projection_center_offset_xyz_mm. "
+                        "The shared evaluation grid is projection-centred."
+                    )
+                inferred_center = np.asarray(
+                    embedded_offset, dtype=np.float64
+                )
+                offset_source = "prediction_npz"
+            embedded_offset = metadata.get("projection_center_offset_xyz_mm")
+            if embedded_offset is not None and not np.allclose(
+                inferred_center,
+                embedded_offset,
+                rtol=0.0,
+                atol=1e-4,
+            ):
+                raise ValueError(
+                    f"{source} inferred grid centre "
+                    f"{inferred_center.tolist()} disagrees with its stored "
+                    "projection centre offset."
+                )
+            metadata["projection_center_offset_xyz_mm"] = (
+                inferred_center.tolist()
+            )
+            metadata["projection_center_offset_inference"] = offset_source
+            lower_origin = lower_origin - inferred_center
+            effective_frame = "projection_centered"
+            effective_frame_source = (
+                f"normalized_from_native_using_{offset_source}"
+            )
+        source_grid = VoxelGrid(
+            shape_zyx=tuple(int(value) for value in volume.shape),
+            spacing_xyz_mm=tuple(float(value) for value in spacing),
+            origin_xyz_mm=tuple(float(value) for value in lower_origin),
+        )
+        metadata["stored_origin_xyz_mm"] = stored_origin.tolist()
+        metadata["spacing_xyz_mm"] = spacing.tolist()
+        metadata["physical_units_source"] = units_source
+        if "bbox_max_xyz_mm" in data.files:
+            declared_max = _xyz_vector(data, "bbox_max_xyz_mm", source)
+            if not np.allclose(
+                declared_max,
+                source_grid.upper_bound_xyz_mm,
+                rtol=0.0,
+                atol=max(1e-6, float(np.max(spacing)) * 1e-5),
+            ):
+                raise ValueError(
+                    f"{source} shape/origin/spacing disagree with bbox_max_xyz_mm."
+                )
+        checkpoint = metadata.get("checkpoint")
+    return NormalizedPrediction(
+        path=source,
+        method=method,
+        method_resolution=method_resolution,
+        volume_key=key,
+        volume_zyx=volume,
+        source_grid=source_grid,
+        coordinate_frame=effective_frame,
+        coordinate_frame_source=effective_frame_source,
+        origin_convention=convention,
+        origin_convention_source=convention_source,
+        metadata=metadata,
+        volume_is_binary_mask=(
+            (method == "3dgrcar" and key == "prediction_mask_zyx")
+            or (method == "deepca" and key == "vol")
+        ),
+        checkpoint=None if checkpoint is None else str(checkpoint),
+    )
 
 
 def _canonical_split(raw: Any, *, path: Path) -> str:
@@ -395,31 +1212,61 @@ def _center_offset_from_prediction_or_projection(
     *,
     case_id: str,
     prediction_metadata: Mapping[str, Any],
+    raw_path: Path,
     projection_paths: Mapping[str, Path] | None,
     raw_frame: str,
+    prediction_frame: str,
 ) -> tuple[np.ndarray, str]:
     embedded = prediction_metadata.get("projection_center_offset_xyz_mm")
+    candidates: list[tuple[str, np.ndarray]] = []
     if embedded is not None:
-        offset = np.asarray(embedded, dtype=np.float64)
-        source = "prediction_npz"
-        if projection_paths is not None and case_id in projection_paths:
-            projection_offset = _load_center_offset_mm(projection_paths[case_id])
-            if not np.allclose(offset, projection_offset, rtol=0.0, atol=1e-4):
+        embedded_source = str(
+            prediction_metadata.get(
+                "projection_center_offset_inference", "prediction_npz"
+            )
+        )
+        candidates.append(
+            (embedded_source, np.asarray(embedded, dtype=np.float64))
+        )
+    with np.load(raw_path, allow_pickle=False) as raw_payload:
+        raw_has_offset = any(
+            key in raw_payload.files
+            for key in (
+                "projection_center_offset",
+                "projection_center_offset_xyz_mm",
+            )
+        )
+    if raw_has_offset:
+        candidates.append(
+            ("raw_vessel_npz", _load_center_offset_mm(raw_path))
+        )
+    if projection_paths is not None and case_id in projection_paths:
+        candidates.append(
+            (
+                "projection_npz",
+                _load_center_offset_mm(projection_paths[case_id]),
+            )
+        )
+    if candidates:
+        source, offset = candidates[0]
+        for comparison_source, comparison_offset in candidates[1:]:
+            if not np.allclose(
+                offset, comparison_offset, rtol=0.0, atol=1e-4
+            ):
                 raise ValueError(
-                    f"Case {case_id} prediction/projection centre offsets disagree: "
-                    f"{offset.tolist()} vs {projection_offset.tolist()}."
+                    f"Case {case_id} centre offsets disagree between "
+                    f"{source} ({offset.tolist()}) and {comparison_source} "
+                    f"({comparison_offset.tolist()})."
                 )
-    elif projection_paths is not None and case_id in projection_paths:
-        offset = _load_center_offset_mm(projection_paths[case_id])
-        source = "projection_npz"
-    elif raw_frame == "projection_centered":
+    elif raw_frame == prediction_frame:
         offset = np.zeros(3, dtype=np.float64)
-        source = "not_required_raw_already_projection_centered"
+        source = f"not_required_matching_{raw_frame}_frames"
     else:
         raise ValueError(
-            f"Case {case_id} raw vessel code is in native coordinates, but its "
-            "saved prediction contains no projection_center_offset_xyz_mm. "
-            "Pass --projection-dir for legacy predictions."
+            f"Case {case_id} raw vessel code is in {raw_frame} coordinates and "
+            f"the prediction is in {prediction_frame} coordinates, but the "
+            "prediction and raw-vessel NPZ contain no projection centre offset. "
+            "Pass --projection-dir only for such legacy files."
         )
     if offset.shape != (3,) or not np.isfinite(offset).all():
         raise ValueError(f"Case {case_id} has an invalid projection centre offset.")
@@ -463,6 +1310,35 @@ def _centered_raw_vessel(
         branch_exists=raw.branch_exists,
         point_valid=raw.point_valid,
         coordinate_frame="projection_centered",
+        vessel_key=raw.vessel_key,
+    )
+
+
+def _raw_vessel_in_frame(
+    raw: RawVesselCode,
+    *,
+    target_frame: str,
+    center_offset_xyz_mm: np.ndarray,
+) -> RawVesselCode:
+    if raw.coordinate_frame == target_frame:
+        return raw
+    if target_frame == "projection_centered":
+        return _centered_raw_vessel(raw, center_offset_xyz_mm)
+    if raw.coordinate_frame != "projection_centered" or target_frame != "native":
+        raise ValueError(
+            f"Cannot transform raw vessel frame {raw.coordinate_frame!r} to "
+            f"prediction frame {target_frame!r}."
+        )
+    vessel = raw.vessel_xyzr_mm.copy()
+    coordinates = vessel[..., :3]
+    coordinates[raw.active_point_mask] += center_offset_xyz_mm[None, :]
+    return RawVesselCode(
+        path=raw.path,
+        case_id=raw.case_id,
+        vessel_xyzr_mm=vessel,
+        branch_exists=raw.branch_exists,
+        point_valid=raw.point_valid,
+        coordinate_frame="native",
         vessel_key=raw.vessel_key,
     )
 
@@ -714,10 +1590,12 @@ def _save_graph_pair(
     *,
     case_id: str,
     split: str,
+    prediction_method: str,
     prediction_graph: VascularCenterlineGraph,
     prediction_node_xyz_mm: np.ndarray,
     raw_reference: RawVesselCode,
     comparison_coordinate_frame: str,
+    evaluation_coordinate_frame: str,
     center_offset_xyz_mm: np.ndarray,
     evaluation_grid: VoxelGrid,
     view_indices: Sequence[int] | None,
@@ -733,7 +1611,10 @@ def _save_graph_pair(
 
     np.savez_compressed(
         path,
-        representation=np.asarray("autocar_voxel_graph_vs_raw_vessel_code"),
+        representation=np.asarray(
+            f"{prediction_method}_voxel_graph_vs_raw_vessel_code"
+        ),
+        prediction_method=np.asarray(prediction_method),
         case_id=np.asarray(case_id),
         dataset_split=np.asarray(split),
         source_view_indices=np.asarray(
@@ -746,10 +1627,10 @@ def _save_graph_pair(
         # Retained as a concise alias for consumers of this initial schema.
         coordinate_frame=np.asarray(comparison_coordinate_frame),
         evaluation_grid_coordinate_frame=np.asarray(
-            "projection_centered_xyz_mm"
+            f"{evaluation_coordinate_frame}_xyz_mm"
         ),
         prediction_node_index_coordinate_frame=np.asarray(
-            "projection_centered_evaluation_grid_zyx"
+            f"{evaluation_coordinate_frame}_evaluation_grid_zyx"
         ),
         prediction_node_xyz_mm_coordinate_frame=np.asarray(
             comparison_coordinate_frame
@@ -775,8 +1656,15 @@ def _save_graph_pair(
         prediction_node_xyz_mm=np.asarray(
             prediction_node_xyz_mm, dtype=np.float32
         ),
-        prediction_node_projection_centered_xyz_mm=(
-            prediction_graph.node_xyz_mm
+        prediction_node_evaluation_frame_xyz_mm=prediction_graph.node_xyz_mm,
+        **(
+            {
+                "prediction_node_projection_centered_xyz_mm": (
+                    prediction_graph.node_xyz_mm
+                )
+            }
+            if evaluation_coordinate_frame == "projection_centered"
+            else {"prediction_node_native_xyz_mm": prediction_graph.node_xyz_mm}
         ),
         prediction_node_radius_mm=prediction_graph.node_radius_mm,
         prediction_edge_node_indices=prediction_graph.edge_node_indices,
@@ -804,9 +1692,14 @@ def _evaluate_case(
     raw_path: Path,
     projection_paths: Mapping[str, Path] | None,
     ground_truth_path: Path | None,
-    prediction_key: str,
+    prediction_method: str,
+    prediction_key: str | None,
     prediction_domain: str,
     prediction_threshold: float,
+    prediction_coordinate_frame: str,
+    prediction_origin_convention: str,
+    three_dgrcar_alignment: str,
+    case_id_override: str | None,
     expected_view_indices: Sequence[int],
     allow_missing_view_indices: bool,
     raw_vessel_key: str,
@@ -822,9 +1715,18 @@ def _evaluate_case(
     mask_path: Path | None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    prediction_raw, prediction_metadata = _load_prediction(
-        prediction_path, prediction_key
+    normalized = _load_normalized_prediction(
+        prediction_path,
+        requested_method=prediction_method,
+        prediction_key=prediction_key,
+        coordinate_frame=prediction_coordinate_frame,
+        origin_convention=prediction_origin_convention,
+        three_dgrcar_alignment=three_dgrcar_alignment,
+        case_id_override=case_id_override,
     )
+    prediction_metadata = normalized.metadata
+    prediction = normalized.volume_zyx
+    source_grid = normalized.source_grid
     expected_views = [int(value) for value in expected_view_indices]
     stored_views = prediction_metadata.get("view_indices")
     if stored_views is None:
@@ -844,23 +1746,31 @@ def _evaluate_case(
                 f"but this evaluation requires {expected_views}."
             )
         view_indices_audit = "matched"
-    prediction, bbox_min, source_voxel_size, axis_order = _resolve_prediction_grid(
-        prediction_raw,
-        prediction_metadata,
-        explicit_axis_order=None,
-        explicit_bbox_min_xyz_mm=None,
-        explicit_voxel_size_mm=None,
-    )
-    if prediction_domain == "logit":
+    if normalized.volume_is_binary_mask:
+        if prediction_domain == "logit":
+            raise ValueError(
+                f"{prediction_path} uses the stored 3DGR-CAR binary mask and "
+                "cannot be interpreted as logits."
+            )
+        source_prediction_mask = np.asarray(prediction, dtype=np.bool_)
+        threshold_source = f"stored_binary_mask:{normalized.volume_key}"
+    elif prediction_domain == "logit":
         prediction = _stable_sigmoid(prediction)
+        source_prediction_mask = np.asarray(
+            prediction >= float(prediction_threshold), dtype=np.bool_
+        )
+        threshold_source = "cli_or_default_after_sigmoid"
     elif np.min(prediction) < 0.0 or np.max(prediction) > 1.0:
         raise ValueError(
             f"{prediction_path} is declared as probability but contains values "
             "outside [0,1]."
         )
-    case_id = _canonical_case_id(
-        prediction_metadata.get("case_id", _case_id_from_path(prediction_path))
-    )
+    else:
+        source_prediction_mask = np.asarray(
+            prediction >= float(prediction_threshold), dtype=np.bool_
+        )
+        threshold_source = "cli_or_default_probability"
+    case_id = _canonical_case_id(prediction_metadata["case_id"])
     raw = load_raw_vessel_code(
         raw_path,
         vessel_key=raw_vessel_key,
@@ -877,17 +1787,26 @@ def _evaluate_case(
     center_offset, center_offset_source = _center_offset_from_prediction_or_projection(
         case_id=case_id,
         prediction_metadata=prediction_metadata,
+        raw_path=raw_path,
         projection_paths=projection_paths,
         raw_frame=raw.coordinate_frame,
+        prediction_frame=normalized.coordinate_frame,
     )
-    raw_centered = _centered_raw_vessel(raw, center_offset)
-    source_prediction_mask = np.asarray(
-        prediction >= float(prediction_threshold), dtype=np.bool_
-    )
-    source_grid = VoxelGrid(
-        shape_zyx=tuple(int(value) for value in prediction.shape),
-        spacing_xyz_mm=(float(source_voxel_size),) * 3,
-        origin_xyz_mm=tuple(float(value) for value in bbox_min),
+    if (
+        ground_truth_path is not None
+        and normalized.coordinate_frame == "projection_centered"
+        and center_offset_source.startswith("not_required_matching_")
+    ):
+        raise ValueError(
+            f"Case {case_id} uses a native voxel ground truth, but no exact "
+            "projection centre offset is available to map the centred "
+            "evaluation grid into that native volume. Embed the offset in "
+            "the prediction/raw-vessel NPZ or pass --projection-dir."
+        )
+    raw_evaluation = _raw_vessel_in_frame(
+        raw,
+        target_frame=normalized.coordinate_frame,
+        center_offset_xyz_mm=center_offset,
     )
     evaluation_grid = VoxelGrid.from_bounds(
         evaluation_bbox_min_xyz_mm,
@@ -909,7 +1828,7 @@ def _evaluate_case(
                 "--evaluation-bbox-min-xyz-mm/--evaluation-bbox-max-xyz-mm "
                 "bounds that every compared method covers."
             )
-    raw_fov_audit = _raw_fov_audit(raw_centered, evaluation_grid)
+    raw_fov_audit = _raw_fov_audit(raw_evaluation, evaluation_grid)
     if not raw_fov_audit["fully_contained"] and not allow_clipped_raw_reference:
         raise ValueError(
             f"Case {case_id} raw vessel reference is not fully contained in "
@@ -932,7 +1851,7 @@ def _evaluate_case(
         prediction_graph, evaluation_grid.shape_zyx
     )
     raw_centerline = rasterize_raw_centerline(
-        raw_centered,
+        raw_evaluation,
         shape_zyx=evaluation_grid.shape_zyx,
         origin_xyz_mm=evaluation_grid.origin_xyz_mm,
         spacing_xyz_mm=spacing_xyz,
@@ -946,7 +1865,7 @@ def _evaluate_case(
     rasterization: dict[str, Any]
     if ground_truth_path is None:
         ground_truth_mask, rasterization = rasterize_raw_vessel_mask(
-            raw_centered,
+            raw_evaluation,
             shape_zyx=evaluation_grid.shape_zyx,
             origin_xyz_mm=evaluation_grid.origin_xyz_mm,
             spacing_xyz_mm=spacing_xyz,
@@ -974,7 +1893,11 @@ def _evaluate_case(
             ground_truth_native,
             native_grid,
             evaluation_grid,
-            target_to_source_offset_xyz_mm=center_offset,
+            target_to_source_offset_xyz_mm=(
+                center_offset
+                if normalized.coordinate_frame == "projection_centered"
+                else (0.0, 0.0, 0.0)
+            ),
         )
         ground_truth_mask &= valid_fov
         evaluation_valid_fov = valid_fov
@@ -1023,16 +1946,23 @@ def _evaluate_case(
     )
     if raw.coordinate_frame == "native":
         raw_reference = raw
-        prediction_comparison_xyz = (
-            prediction_graph.node_xyz_mm.astype(np.float64)
-            + center_offset[None, :]
-        )
-        comparison_coordinate_frame = "native_xyz_mm"
-    else:
-        raw_reference = raw_centered
         prediction_comparison_xyz = prediction_graph.node_xyz_mm.astype(
             np.float64
         )
+        if normalized.coordinate_frame == "projection_centered":
+            prediction_comparison_xyz = (
+                prediction_comparison_xyz + center_offset[None, :]
+            )
+        comparison_coordinate_frame = "native_xyz_mm"
+    else:
+        raw_reference = raw
+        prediction_comparison_xyz = prediction_graph.node_xyz_mm.astype(
+            np.float64
+        )
+        if normalized.coordinate_frame == "native":
+            prediction_comparison_xyz = (
+                prediction_comparison_xyz - center_offset[None, :]
+            )
         comparison_coordinate_frame = "projection_centered_xyz_mm"
     raw_arrays = _raw_point_arrays(raw_reference)
     graph_errors = centerline_radius_errors(
@@ -1103,10 +2033,12 @@ def _evaluate_case(
         graph_path,
         case_id=case_id,
         split=split,
+        prediction_method=normalized.method,
         prediction_graph=prediction_graph,
         prediction_node_xyz_mm=prediction_comparison_xyz,
         raw_reference=raw_reference,
         comparison_coordinate_frame=comparison_coordinate_frame,
+        evaluation_coordinate_frame=normalized.coordinate_frame,
         center_offset_xyz_mm=center_offset,
         evaluation_grid=evaluation_grid,
         view_indices=stored_views,
@@ -1118,6 +2050,10 @@ def _evaluate_case(
         np.savez_compressed(
             mask_path,
             case_id=np.asarray(case_id),
+            prediction_method=np.asarray(normalized.method),
+            evaluation_coordinate_frame=np.asarray(
+                normalized.coordinate_frame
+            ),
             source_view_indices=np.asarray(
                 [] if stored_views is None else stored_views,
                 dtype=np.int64,
@@ -1163,9 +2099,42 @@ def _evaluate_case(
         ),
         "graph_file": str(graph_path),
         "mask_file": None if mask_path is None else str(mask_path),
-        "prediction_source_axis_order": axis_order,
+        "prediction_method": normalized.method,
+        "prediction_method_resolution": normalized.method_resolution,
+        "prediction_volume_key": normalized.volume_key,
+        "prediction_source_axis_order": prediction_metadata[
+            "volume_axis_order"
+        ],
+        "prediction_source_coordinate_frame": prediction_metadata[
+            "source_prediction_coordinate_frame"
+        ],
+        "prediction_source_coordinate_frame_source": prediction_metadata[
+            "source_prediction_coordinate_frame_source"
+        ],
+        "prediction_evaluation_coordinate_frame": (
+            normalized.coordinate_frame
+        ),
+        "prediction_coordinate_frame_normalization": (
+            normalized.coordinate_frame_source
+        ),
+        "prediction_origin_convention": normalized.origin_convention,
+        "prediction_origin_convention_source": (
+            normalized.origin_convention_source
+        ),
         "source_prediction_shape_zyx": list(prediction.shape),
-        "source_prediction_voxel_size_mm": float(source_voxel_size),
+        "source_prediction_spacing_xyz_mm": list(
+            source_grid.spacing_xyz_mm
+        ),
+        "source_prediction_voxel_size_mm": (
+            float(source_grid.spacing_xyz_mm[0])
+            if np.allclose(
+                source_grid.spacing_xyz_mm,
+                source_grid.spacing_xyz_mm[0],
+                rtol=0.0,
+                atol=1e-9,
+            )
+            else None
+        ),
         "source_prediction_bbox_min_xyz_mm": list(source_grid.origin_xyz_mm),
         "source_prediction_bbox_max_xyz_mm": list(
             source_grid.upper_bound_xyz_mm
@@ -1174,7 +2143,60 @@ def _evaluate_case(
         "bbox_min_xyz_mm": list(evaluation_grid.origin_xyz_mm),
         "bbox_max_xyz_mm": list(evaluation_grid.upper_bound_xyz_mm),
         "voxel_size_mm": _EVALUATION_VOXEL_SIZE_MM,
-        "prediction_threshold": float(prediction_threshold),
+        "prediction_threshold": (
+            None
+            if normalized.volume_is_binary_mask
+            else float(prediction_threshold)
+        ),
+        "prediction_threshold_requested": float(prediction_threshold),
+        "prediction_threshold_source": threshold_source,
+        "prediction_used_precomputed_binary_mask": bool(
+            normalized.volume_is_binary_mask
+        ),
+        "prediction_mask_generation_threshold": (
+            prediction_metadata.get("threshold")
+            if normalized.volume_is_binary_mask
+            else None
+        ),
+        "prediction_mask_generation_threshold_audit": (
+            "recorded"
+            if normalized.volume_is_binary_mask
+            and "threshold" in prediction_metadata
+            else (
+                "missing_from_precomputed_mask"
+                if normalized.volume_is_binary_mask
+                else "not_applicable"
+            )
+        ),
+        "prediction_checkpoint": normalized.checkpoint,
+        "prediction_checkpoint_audit": (
+            "recorded" if normalized.checkpoint is not None else "missing"
+        ),
+        "prediction_case_id_source": prediction_metadata["case_id_source"],
+        "prediction_split_source": (
+            "npz_metadata"
+            if "dataset_split" in prediction_metadata
+            else (
+                "parent_directory"
+                if _prediction_split(prediction_path) != "unspecified"
+                else "missing_recorded_as_unspecified"
+            )
+        ),
+        "prediction_format_metadata": {
+            key: value
+            for key, value in prediction_metadata.items()
+            if key
+            in {
+                "3dgrcar_alignment",
+                "3dgrcar_alignment_source",
+                "applied_prediction_shift_zyx_voxels",
+                "axis_direction_sign_xyz",
+                "axis_direction_sign_source",
+                "physical_units_source",
+                "projection_center_offset_inference",
+                "stored_origin_xyz_mm",
+            }
+        },
         "view_indices": stored_views,
         "expected_view_indices": expected_views,
         "view_indices_audit": view_indices_audit,
@@ -1347,10 +2369,11 @@ def _summary_rows(summary: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
-    prediction_paths = _discover_npz_by_key(
+    prediction_paths = _discover_prediction_npzs(
         args.prediction_dir,
-        required_keys=(args.prediction_key,),
-        label="prediction",
+        requested_method=args.prediction_method,
+        prediction_key=args.prediction_key,
+        case_id_override=args.case_id_override,
     )
     raw_paths = _discover_npz_by_key(
         args.raw_vessel_dir,
@@ -1463,9 +2486,18 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
         "name": "saved_volume_to_raw_vessel_graph_evaluation",
         "artery": args.artery,
         "artery_pairing_audit": artery_audit,
+        "prediction_method_requested": args.prediction_method,
         "prediction_key": args.prediction_key,
         "prediction_domain": args.prediction_domain,
         "prediction_threshold": float(args.prediction_threshold),
+        "prediction_coordinate_frame_requested": (
+            args.prediction_coordinate_frame
+        ),
+        "prediction_origin_convention_requested": (
+            args.prediction_origin_convention
+        ),
+        "three_dgrcar_alignment_requested": args.three_dgrcar_alignment,
+        "case_id_override": args.case_id_override,
         "expected_view_indices": list(args.expected_view_indices),
         "missing_view_indices_policy": (
             "explicitly_allowed"
@@ -1519,8 +2551,8 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
             "distances_mm"
         ),
         "coordinate_alignment": (
-            "per_case_raw_frame_resolution_with_native_xyz_mm_minus_"
-            "projection_center_offset_when_required"
+            "method_specific_prediction_grid_normalization_to_projection_"
+            "centered_coordinates_then_per_case_raw_frame_resolution"
         ),
         "radius_error_status": (
             "derived_postprocessing_metric_for_prediction_vs_native_raw_radius"
@@ -1544,9 +2576,14 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
                 if ground_truth_paths is None
                 else ground_truth_paths[case_id]
             ),
+            prediction_method=args.prediction_method,
             prediction_key=args.prediction_key,
             prediction_domain=args.prediction_domain,
             prediction_threshold=args.prediction_threshold,
+            prediction_coordinate_frame=args.prediction_coordinate_frame,
+            prediction_origin_convention=args.prediction_origin_convention,
+            three_dgrcar_alignment=args.three_dgrcar_alignment,
+            case_id_override=args.case_id_override,
             expected_view_indices=args.expected_view_indices,
             allow_missing_view_indices=args.allow_missing_view_indices,
             raw_vessel_key=args.raw_vessel_key,
@@ -1573,6 +2610,26 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
             f"Chamfer={chamfer_text}",
             flush=True,
         )
+    protocol["prediction_methods_resolved"] = sorted(
+        {str(record["prediction_method"]) for record in records}
+    )
+    protocol["missing_prediction_provenance"] = {
+        "checkpoint_cases": [
+            str(record["case_id"])
+            for record in records
+            if record["prediction_checkpoint"] is None
+        ],
+        "split_cases": [
+            str(record["case_id"])
+            for record in records
+            if record["split"] == "unspecified"
+        ],
+        "view_indices_cases": [
+            str(record["case_id"])
+            for record in records
+            if record["view_indices"] is None
+        ],
+    }
     summary = _summary(records, protocol)
     _write_json(output_dir / "per_case_metrics.json", records)
     _write_csv(output_dir / "per_case_metrics.csv", records)
@@ -1619,18 +2676,83 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artery", choices=("lca", "rca"), required=True)
-    parser.add_argument("--prediction-dir", type=Path, required=True)
+    parser.add_argument(
+        "--prediction-dir",
+        "--prediction-path",
+        dest="prediction_dir",
+        type=Path,
+        required=True,
+        help="One prediction NPZ file or a directory containing prediction NPZs.",
+    )
     parser.add_argument("--raw-vessel-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--projection-dir", type=Path)
+    parser.add_argument(
+        "--projection-dir",
+        type=Path,
+        help=(
+            "Legacy fallback only when neither prediction nor raw-vessel "
+            "NPZs embed the projection centre offset."
+        ),
+    )
     parser.add_argument("--ground-truth-volume-dir", type=Path)
-    parser.add_argument("--prediction-key", default="prediction_volume_zyx")
+    parser.add_argument(
+        "--prediction-method",
+        choices=("auto", *_PREDICTION_METHODS),
+        default="auto",
+        help=(
+            "Prediction NPZ schema. 'auto' uses prediction_method metadata or "
+            "a unique schema signature and records how it was resolved."
+        ),
+    )
+    parser.add_argument(
+        "--prediction-key",
+        help=(
+            "Override the method-default volume key. Defaults: AutoCAR "
+            "prediction_volume_zyx, DeepCA vol, and 3DGR-CAR "
+            "prediction_mask_zyx."
+        ),
+    )
     parser.add_argument(
         "--prediction-domain",
         choices=("probability", "logit"),
         default="probability",
     )
     parser.add_argument("--prediction-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--prediction-coordinate-frame",
+        choices=("auto", "native", "projection-centered"),
+        default="auto",
+        help=(
+            "Physical frame of the saved volume before normalization to the "
+            "shared projection-centred evaluation frame."
+        ),
+    )
+    parser.add_argument(
+        "--prediction-origin-convention",
+        choices=("auto", "lower-bound", "voxel-center"),
+        default="auto",
+        help=(
+            "Whether the stored origin is the lower voxel boundary or first "
+            "voxel centre. AutoCAR/DeepCA use verified schema contracts."
+        ),
+    )
+    parser.add_argument(
+        "--3dgrcar-alignment",
+        dest="three_dgrcar_alignment",
+        choices=("auto", "physical", "same-grid"),
+        default="auto",
+        help=(
+            "Required for legacy 3DGR-CAR NPZs that omit their alignment mode. "
+            "Physical and same-grid files use different saved prediction grids."
+        ),
+    )
+    parser.add_argument(
+        "--case-id-override",
+        help=(
+            "Case ID for one prediction NPZ that lacks case_id metadata. This "
+            "is rejected for directory input."
+        ),
+    )
     parser.add_argument(
         "--expected-view-indices",
         nargs=2,

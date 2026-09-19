@@ -170,6 +170,8 @@ def export_predictions(args: argparse.Namespace) -> dict[str, Any]:
                 )
             np.savez_compressed(
                 output_path,
+                prediction_method=np.asarray("autocar"),
+                checkpoint=np.asarray(str(args.checkpoint.resolve())),
                 prediction_volume_zyx=dense.astype(dtype, copy=False),
                 case_id=np.asarray(case_id),
                 view_indices=np.asarray(sample["view_indices"], dtype=np.int64),

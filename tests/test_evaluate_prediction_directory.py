@@ -10,7 +10,93 @@ import pytest
 pytest.importorskip("scipy")
 pytest.importorskip("skimage")
 
-from src.evaluate_prediction_directory import main
+from src.evaluate_prediction_directory import (
+    _discover_prediction_npzs,
+    _load_normalized_prediction,
+    main,
+)
+
+
+def _load_prediction_adapter(path: Path, **overrides):
+    options = {
+        "requested_method": "auto",
+        "prediction_key": None,
+        "coordinate_frame": "auto",
+        "origin_convention": "auto",
+        "three_dgrcar_alignment": "auto",
+        "case_id_override": None,
+    }
+    options.update(overrides)
+    return _load_normalized_prediction(path, **options)
+
+
+def test_deepca_adapter_uses_exporter_grid_contract_and_infers_center(tmp_path):
+    path = tmp_path / "deepca_case.npz"
+    volume = np.zeros((4, 4, 4), dtype=np.uint8)
+    volume[1, 1, 1] = 1
+    np.savez_compressed(
+        path,
+        vol=volume,
+        spacing=np.asarray([1.0, 1.0, 1.0]),
+        origin=np.asarray([10.0, 20.0, 30.0]),
+        axis_order=np.asarray("ZYX"),
+        case_id=np.asarray("lca_0004"),
+        view_indices=np.asarray([0, 1]),
+        checkpoint=np.asarray("/checkpoints/best.pt"),
+    )
+
+    prediction = _load_prediction_adapter(path)
+
+    assert prediction.method == "deepca"
+    assert prediction.volume_is_binary_mask is True
+    assert prediction.coordinate_frame == "projection_centered"
+    assert prediction.origin_convention == "voxel_center"
+    np.testing.assert_allclose(
+        prediction.metadata["projection_center_offset_xyz_mm"],
+        [11.5, 21.5, 31.5],
+    )
+    np.testing.assert_allclose(prediction.source_grid.origin_xyz_mm, [-2, -2, -2])
+    assert prediction.checkpoint == "/checkpoints/best.pt"
+
+
+def test_3dgrcar_legacy_file_requires_alignment_and_case_override(tmp_path):
+    path = tmp_path / "3dgrcar_pred.npz"
+    mask = np.zeros((4, 4, 4), dtype=np.bool_)
+    mask[1, 1, 1] = True
+    np.savez_compressed(
+        path,
+        prediction_mask_zyx=mask,
+        ground_truth_spacing_xyz_m=np.asarray([0.001, 0.001, 0.001]),
+        ground_truth_origin_xyz_m=np.asarray([0.0, 0.0, 0.0]),
+        projection_center_offset_xyz_m=np.asarray([0.003, 0.006, 0.009]),
+        applied_prediction_shift_zyx_voxels=np.asarray([9.0, 6.0, 3.0]),
+    )
+
+    with pytest.raises(ValueError, match="omits 3DGR-CAR ground-truth alignment"):
+        _load_prediction_adapter(path, case_id_override="7")
+
+    prediction = _load_prediction_adapter(
+        path,
+        three_dgrcar_alignment="physical",
+        case_id_override="7",
+    )
+    assert prediction.method == "3dgrcar"
+    assert prediction.metadata["case_id"] == "7"
+    assert prediction.metadata["case_id_source"] == "cli_override"
+    assert prediction.coordinate_frame == "projection_centered"
+    assert prediction.volume_key == "prediction_mask_zyx"
+    np.testing.assert_allclose(
+        prediction.source_grid.spacing_xyz_mm, [1.0, 1.0, 1.0]
+    )
+    np.testing.assert_allclose(prediction.source_grid.origin_xyz_mm, [-2, -2, -2])
+
+    discovered = _discover_prediction_npzs(
+        path,
+        requested_method="3dgrcar",
+        prediction_key=None,
+        case_id_override="7",
+    )
+    assert discovered == {"7": path.resolve()}
 
 
 def _save_prediction(
@@ -51,6 +137,7 @@ def _save_raw_vessel(
     radius_mm: float,
     coordinate_frame: str,
     case_id: str = "1",
+    center_offset_xyz_mm: tuple[float, float, float] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     points = np.asarray(points_xyz_mm, dtype=np.float32)
@@ -61,14 +148,18 @@ def _save_raw_vessel(
         ),
         axis=1,
     )[None, ...]
-    np.savez_compressed(
-        path,
-        raw_vessel_code_mm=vessel,
-        branch_exists=np.asarray([True]),
-        point_valid_mask=np.ones((1, len(points)), dtype=np.bool_),
-        coordinate_frame=np.asarray(coordinate_frame),
-        case_id=np.asarray(case_id),
-    )
+    payload: dict[str, np.ndarray] = {
+        "raw_vessel_code_mm": vessel,
+        "branch_exists": np.asarray([True]),
+        "point_valid_mask": np.ones((1, len(points)), dtype=np.bool_),
+        "coordinate_frame": np.asarray(coordinate_frame),
+        "case_id": np.asarray(case_id),
+    }
+    if center_offset_xyz_mm is not None:
+        payload["projection_center_offset_xyz_mm"] = np.asarray(
+            center_offset_xyz_mm, dtype=np.float32
+        )
+    np.savez_compressed(path, **payload)
 
 
 def _run_directory_evaluation(
@@ -281,12 +372,50 @@ def test_native_raw_vessel_without_offset_is_rejected(tmp_path):
 
     with pytest.raises(
         ValueError,
-        match="contains no projection_center_offset_xyz_mm",
+        match="contain no projection centre offset",
     ):
         _run_directory_evaluation(
             prediction_dir,
             raw_dir,
             output_dir,
+        )
+
+
+def test_native_voxel_ground_truth_requires_proven_center_offset(tmp_path):
+    prediction_dir = tmp_path / "predictions"
+    raw_dir = tmp_path / "raw"
+    ground_truth_dir = tmp_path / "ground_truth"
+    output_dir = tmp_path / "metrics"
+
+    _save_prediction(
+        prediction_dir / "validation" / "1.npz",
+        np.zeros((8, 8, 8), dtype=np.float32),
+    )
+    _save_raw_vessel(
+        raw_dir / "1" / "original.npz",
+        np.asarray([[0.25, 0.25, 0.25]], dtype=np.float32),
+        radius_mm=0.2,
+        coordinate_frame="projection_centered",
+    )
+    ground_truth_dir.mkdir(parents=True)
+    np.savez_compressed(
+        ground_truth_dir / "lca_0001.npz",
+        case_id=np.asarray("1"),
+        vol=np.zeros((8, 8, 8), dtype=np.uint8),
+        spacing=np.asarray([0.5, 0.5, 0.5], dtype=np.float32),
+        spacing_units=np.asarray("mm"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="native voxel ground truth.*no exact projection centre offset",
+    ):
+        _run_directory_evaluation(
+            prediction_dir,
+            raw_dir,
+            output_dir,
+            "--ground-truth-volume-dir",
+            str(ground_truth_dir),
         )
 
 
@@ -310,6 +439,40 @@ def test_saved_prediction_view_pair_must_match_strict_zero_one(tmp_path):
 
     with pytest.raises(ValueError, match=r"requires \[0, 1\]"):
         _run_directory_evaluation(prediction_dir, raw_dir, output_dir)
+
+
+def test_legacy_prediction_uses_offset_embedded_in_raw_vessel_npz(tmp_path):
+    prediction_dir = tmp_path / "predictions"
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "metrics"
+    center_offset = np.asarray([10.0, 20.0, 30.0], dtype=np.float32)
+    centered_points = np.column_stack(
+        (
+            np.arange(-1.75, 1.5, 0.5, dtype=np.float32),
+            np.full(7, 0.25, dtype=np.float32),
+            np.full(7, 0.25, dtype=np.float32),
+        )
+    )
+    prediction = np.zeros((8, 8, 8), dtype=np.float32)
+    prediction[4, 4, :7] = 1.0
+    _save_prediction(prediction_dir / "validation" / "1.npz", prediction)
+    _save_raw_vessel(
+        raw_dir / "1" / "original.npz",
+        centered_points + center_offset[None, :],
+        radius_mm=0.24,
+        coordinate_frame="native",
+        center_offset_xyz_mm=tuple(float(value) for value in center_offset),
+    )
+
+    _run_directory_evaluation(prediction_dir, raw_dir, output_dir)
+
+    record = json.loads((output_dir / "per_case_metrics.json").read_text())[0]
+    assert record["projection_center_offset_source"] == "raw_vessel_npz"
+    assert record["dice_3d"] == pytest.approx(1.0)
+    assert record["cldice_3d"] == pytest.approx(1.0)
+    assert record["centerline_chamfer_distance_mm"] == pytest.approx(
+        0.0, abs=1e-6
+    )
 
 
 @pytest.mark.parametrize("offset_encoding", ["exact_mm", "legacy_metres"])
@@ -441,6 +604,7 @@ def test_voxel_ground_truth_masks_metrics_to_partial_valid_fov(tmp_path):
         raw_points,
         radius_mm=0.2,
         coordinate_frame="projection_centered",
+        center_offset_xyz_mm=(0.0, 0.0, 0.0),
     )
     ground_truth_dir.mkdir(parents=True)
     ground_truth_xyz = np.zeros((4, 8, 8), dtype=np.uint8)

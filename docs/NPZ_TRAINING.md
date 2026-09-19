@@ -929,22 +929,28 @@ Saved volumes can be evaluated without loading AutoCAR, a checkpoint, CUDA,
 or the original input views:
 
 ```bash
-python scripts/evaluate_autocar_prediction_directory.py \
+python scripts/evaluate_prediction_directory.py \
   --artery lca \
+  --prediction-method autocar \
   --prediction-dir /path/to/evaluation/predictions/final \
   --raw-vessel-dir /path/to/raw_vessel_targets \
-  --projection-dir /path/to/stage_2_projection_npzs \
   --output-dir /path/to/offline_graph_metrics \
   --save-masks
 ```
 
-Both input directories are searched recursively and paired by normalized case
-ID. `--artery lca` or `--artery rca` is mandatory because LCA and RCA reuse
+`--prediction-dir` accepts either one `.npz` file or a directory. Input
+directories are searched recursively and paired by normalized case ID.
+`--prediction-path` is an equivalent, clearer alias for single-file use.
+`--artery lca` or `--artery rca` is mandatory because LCA and RCA reuse
 case numbers. The evaluator rejects conflicting artery markers found in paths
 or scalar NPZ metadata and records how many files could be independently
 verified; the explicit flag remains the audit label for generic numeric-only
-layouts. Prediction files must contain `prediction_volume_zyx` plus their axis,
-bounding-box and voxel-spacing metadata. By default they must also record the
+layouts. `--prediction-method {auto,autocar,deepca,3dgrcar}` selects the input
+schema. New AutoCAR exports store `prediction_method=autocar`; auto mode first
+uses that tag and otherwise accepts only a unique schema signature. The
+resolved method, volume key, original frame, origin convention, grid spacing,
+checkpoint provenance, split provenance, and any missing metadata are written
+to the report. By default predictions must also record the
 ordered input pair `view_indices=[0,1]`. Use
 `--expected-view-indices I J` only for a deliberately different protocol;
 `[0,6]` predictions are rejected by the default run rather than mixed with the
@@ -953,10 +959,53 @@ hatch for externally audited third-party volumes that cannot carry this
 metadata. Raw targets must contain
 `raw_vessel_code_mm[M,N,4]` in `(x,y,z,radius)` order; `branch_exists` and
 `point_valid_mask` are honoured when present. New prediction exports embed
-`projection_center_offset_xyz_mm`. For an older prediction, provide the
-matching Stage-2 files with `--projection-dir` so native raw coordinates can
-be aligned with the projection-centred reconstruction. A missing required
-offset is an error rather than an assumed zero shift.
+`projection_center_offset_xyz_mm`, so the normal command needs only the saved
+prediction and raw-vessel directories. An offset embedded in the raw-vessel
+NPZ is also accepted and cross-checked. Use `--projection-dir` only as a
+fallback when evaluating an older prediction together with a separate native
+raw-vessel NPZ that contains no offset. A missing required offset is an error
+rather than an assumed zero shift.
+
+Method-specific normalization is as follows:
+
+- **AutoCAR** uses `prediction_volume_zyx`, lower-bound
+  `bbox_min_xyz_mm`, scalar `voxel_size_mm`, and the projection-centred frame.
+- **DeepCA** uses binary `vol`, XYZ `spacing`, and `origin`. Its verified
+  exporter contract defines `origin` as the first voxel centre in native
+  millimetres. The adapter infers the exact projection centre from the grid,
+  subtracts it, and records both the inferred offset and normalization.
+- **3DGR-CAR** prefers its stored `prediction_mask_zyx`; do not threshold
+  `prediction_volume_zyx` at `0.5`, because the percentile threshold that
+  produced the mask is not stored in legacy files. Legacy NPZs also omit
+  whether `ground_truth_alignment` was `physical` or `same-grid`, even though
+  those modes put the saved mask on different grids. Therefore pass
+  `--3dgrcar-alignment physical` or `--3dgrcar-alignment same-grid`. Physical
+  mode reconstructs and audits the centred isotropic grid from the recorded
+  projection offset and applied voxel shift. Same-grid mode uses the native GT
+  first-centre origin/spacing, then normalizes it with the projection offset.
+
+For example, a legacy single 3DGR-CAR file without case, view, split, or
+checkpoint metadata can be evaluated explicitly as:
+
+```bash
+python scripts/evaluate_prediction_directory.py \
+  --artery lca \
+  --prediction-method 3dgrcar \
+  --prediction-path /path/to/3dgrcar_pred.npz \
+  --3dgrcar-alignment physical \
+  --case-id-override 4 \
+  --allow-missing-view-indices \
+  --raw-vessel-dir /path/to/raw_vessel_targets \
+  --output-dir /path/to/offline_graph_metrics \
+  --evaluation-bbox-min-xyz-mm -69 -69 -69 \
+  --evaluation-bbox-max-xyz-mm 69 69 69
+```
+
+`--case-id-override` is accepted only for one prediction file. Missing split
+is recorded as `unspecified`, and missing checkpoint/view provenance is
+reported rather than guessed. `--prediction-coordinate-frame` and
+`--prediction-origin-convention` are available to audit nonstandard exports;
+the defaults above come from the verified exporters, not array-shape guesses.
 
 The lower-level `python -m src.predict_npz` exporter retains its training-time
 `[0,6]` default. If it is used to create inputs for this strict offline
@@ -971,13 +1020,17 @@ python -m src.predict_npz ... \
 This evaluator deliberately fixes one common comparison lattice to **0.5 mm
 isotropic spacing**. Its default half-open bounds are AutoCAR's
 `[-100,-100,-100]` to `[100,100,100]` mm, producing a `400 x 400 x 400` ZYX
-grid. It thresholds a saved prediction first (default `0.5`), then
-nearest-neighbour resamples the binary mask onto that lattice. Every source
-prediction must cover the full common field of view. Use the same explicit
+grid. It uses a method's stored binary mask when one is available; otherwise
+it thresholds the saved prediction first (default `0.5`). It then
+nearest-neighbour resamples that mask onto the lattice. Every source
+prediction must cover the full common field of view. The supplied DeepCA and
+3DGR-CAR examples both cover `[-69,69)` mm after normalization, so use those
+explicit bounds for **all three methods** when comparing those exports. Always
+use the same explicit
 `--evaluation-bbox-min-xyz-mm X Y Z` and
-`--evaluation-bbox-max-xyz-mm X Y Z` for every compared method only when the
-dataset intentionally uses different common bounds. Spacing remains fixed at
-0.5 mm and is not a user-adjustable option.
+`--evaluation-bbox-max-xyz-mm X Y Z` for every compared method; changing the
+field of view between methods makes Dice and clDice incomparable. Spacing
+remains fixed at 0.5 mm and is not a user-adjustable option.
 
 The raw radius-varying polylines and raw centreline are rasterized on the same
 lattice. By default every raw centreline and radius sample must be fully

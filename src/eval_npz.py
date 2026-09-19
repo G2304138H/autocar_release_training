@@ -1664,6 +1664,7 @@ def _save_prediction_npz(
     sample: Mapping[str, Any],
     *,
     dataset_split: str,
+    checkpoint: Path,
     protocol: Mapping[str, Any],
     output_dtype: str,
 ) -> None:
@@ -1690,6 +1691,8 @@ def _save_prediction_npz(
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
+        prediction_method=np.asarray("autocar"),
+        checkpoint=np.asarray(str(checkpoint.resolve())),
         prediction_volume_zyx=prediction_zyx.astype(dtype, copy=False),
         case_id=np.asarray(str(sample["case_id"])),
         dataset_split=np.asarray(dataset_split),
@@ -2236,6 +2239,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 dense,
                 sample,
                 dataset_split=dataset_split,
+                checkpoint=options.checkpoint,
                 protocol=protocol,
                 output_dtype=options.output_dtype,
             )

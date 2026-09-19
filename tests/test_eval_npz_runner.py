@@ -123,11 +123,16 @@ def test_prediction_npz_uses_stable_volume_and_evaluation_fields(tmp_path):
         np.ones((2, 3, 4), dtype=np.float32),
         sample,
         dataset_split="test",
+        checkpoint=tmp_path / "checkpoints" / "best.ckpt",
         protocol=protocol,
         output_dtype="float16",
     )
 
     with np.load(path, allow_pickle=False) as payload:
+        assert payload["prediction_method"].item() == "autocar"
+        assert payload["checkpoint"].item() == str(
+            (tmp_path / "checkpoints" / "best.ckpt").resolve()
+        )
         assert payload["prediction_volume_zyx"].shape == (2, 3, 4)
         assert payload["prediction_volume_zyx"].dtype == np.float16
         assert payload["volume_axis_order"].item() == "zyx"
