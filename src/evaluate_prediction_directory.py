@@ -1731,6 +1731,29 @@ def _cldice_from_raw_centerline(
     }
 
 
+def _connected_component_count_26n(mask_zyx: np.ndarray) -> int:
+    """Count foreground components using full 3D (26-neighbour) adjacency."""
+
+    binary = np.asarray(mask_zyx, dtype=np.bool_)
+    if binary.ndim != 3:
+        raise ValueError(
+            "Connected-component evaluation requires a 3D ZYX mask, got "
+            f"shape {binary.shape}."
+        )
+    try:
+        from scipy import ndimage
+    except ModuleNotFoundError as error:
+        raise ModuleNotFoundError(
+            "3D connected-component evaluation requires scipy. Install the "
+            "maintained environment requirements before running evaluation."
+        ) from error
+    _, component_count = ndimage.label(
+        binary,
+        structure=np.ones((3, 3, 3), dtype=np.uint8),
+    )
+    return int(component_count)
+
+
 def _save_graph_pair(
     path: Path,
     *,
@@ -1825,6 +1848,14 @@ def _save_graph_pair(
         dice_3d=optional("dice_3d"),
         cldice_3d=optional("cldice_3d"),
         centerline_voxel_dice_3d=optional("centerline_voxel_dice_3d"),
+        prediction_connected_component_count_26n=np.asarray(
+            int(metrics["prediction_connected_component_count_26n"]),
+            dtype=np.int64,
+        ),
+        ground_truth_connected_component_count_26n=np.asarray(
+            int(metrics["ground_truth_connected_component_count_26n"]),
+            dtype=np.int64,
+        ),
         centerline_chamfer_distance_mm=optional(
             "centerline_chamfer_distance_mm"
         ),
@@ -2090,6 +2121,12 @@ def _evaluate_case(
         evaluated_raw_centerline,
         evaluated_prediction_centerline,
     )
+    prediction_connected_components = _connected_component_count_26n(
+        evaluated_prediction_mask
+    )
+    ground_truth_connected_components = _connected_component_count_26n(
+        evaluated_ground_truth_mask
+    )
     if raw.coordinate_frame == "native":
         raw_reference = raw
         prediction_comparison_xyz = prediction_graph.node_xyz_mm.astype(
@@ -2141,6 +2178,15 @@ def _evaluate_case(
             "ground_truth_centerline_in_prediction_voxels"
         ],
         "centerline_voxel_dice_3d": centerline_voxel_dice,
+        "prediction_connected_component_count_26n": (
+            prediction_connected_components
+        ),
+        "ground_truth_connected_component_count_26n": (
+            ground_truth_connected_components
+        ),
+        "connected_component_count_absolute_error_26n": abs(
+            prediction_connected_components - ground_truth_connected_components
+        ),
         "intersection_voxels": intersection,
         "predicted_foreground_voxels": int(
             evaluated_prediction_mask.sum()
@@ -2211,6 +2257,13 @@ def _evaluate_case(
             prediction_mask_zyx=prediction_mask.astype(np.uint8),
             raw_ground_truth_centerline_zyx=raw_centerline.astype(np.uint8),
             prediction_centerline_zyx=prediction_centerline.astype(np.uint8),
+            prediction_connected_component_count_26n=np.asarray(
+                prediction_connected_components, dtype=np.int64
+            ),
+            ground_truth_connected_component_count_26n=np.asarray(
+                ground_truth_connected_components, dtype=np.int64
+            ),
+            connected_component_connectivity=np.asarray(26, dtype=np.int32),
             evaluation_valid_fov_is_full=np.asarray(
                 evaluation_valid_fov is None, dtype=np.bool_
             ),
@@ -2399,6 +2452,15 @@ def _summary(records: Sequence[Mapping[str, Any]], protocol: Mapping[str, Any]):
         "centerline_mean_error_mm": "centerline_mean_error_mm",
         "centerline_chamfer_distance_mm": "centerline_chamfer_distance_mm",
         "derived_radius_mae_mm": "derived_radius_mae_mm",
+        "prediction_connected_component_count_26n": (
+            "prediction_connected_component_count_26n"
+        ),
+        "ground_truth_connected_component_count_26n": (
+            "ground_truth_connected_component_count_26n"
+        ),
+        "connected_component_count_absolute_error_26n": (
+            "connected_component_count_absolute_error_26n"
+        ),
         "processing_elapsed_ms": "processing_elapsed_ms",
     }
     result: dict[str, Any] = {
@@ -2729,6 +2791,12 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
         "radius_error_status": (
             "derived_postprocessing_metric_for_prediction_vs_native_raw_radius"
         ),
+        "connected_component_count": (
+            "foreground_components_after_thresholding_and_resampling_to_the_"
+            "canonical_0.5mm_grid; 26_neighbour_connectivity; background_"
+            "excluded; every_component_including_single_voxels_counted; "
+            "native_voxel_gt_runs_use_the_same_valid_fov_roi_as_other_metrics"
+        ),
     }
     records: list[dict[str, Any]] = []
     for case_id in case_ids:
@@ -2779,7 +2847,9 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
             f"case={case_id} split={record['split']} "
             f"Dice={record['dice_3d']:.6f} "
             f"clDice={record['cldice_3d']:.6f} "
-            f"Chamfer={chamfer_text}",
+            f"Chamfer={chamfer_text} "
+            "Components26="
+            f"{record['prediction_connected_component_count_26n']}",
             flush=True,
         )
     protocol["prediction_methods_resolved"] = sorted(

@@ -653,6 +653,14 @@ This is the same unhalved centreline-Chamfer convention used by the parametric
 paper-metric evaluator.
 
 `radius_mae_mm` is the corresponding symmetric mean absolute radius error.
+The standalone prediction-directory evaluator also counts foreground connected
+components after thresholding and resampling each prediction onto the canonical
+0.5-mm grid. It uses full 26-neighbour 3D connectivity, excludes background,
+and counts every component including isolated single voxels. Per-case output
+records `prediction_connected_component_count_26n`; the JSON/CSV summary
+reports its macro mean and standard error. The corresponding ground-truth count
+and absolute count error are recorded and aggregated under the analogous
+`ground_truth_...` and `connected_component_count_absolute_error_26n` names.
 Both directional terms, macro means, standard errors, and valid/invalid case
 counts are retained. An empty graph has undefined (`null`) errors and is
 explicitly counted rather than treated as a zero-error case.

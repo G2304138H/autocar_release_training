@@ -12,12 +12,23 @@ pytest.importorskip("skimage")
 
 from src.evaluate_prediction_directory import (
     _RAW_VESSEL_AUTO_KEYS,
+    _connected_component_count_26n,
     _discover_npz_by_key,
     _discover_prediction_npzs,
     _load_normalized_prediction,
     load_raw_vessel_code,
     main,
 )
+
+
+def test_connected_component_count_uses_26_neighbour_adjacency():
+    mask = np.zeros((4, 4, 4), dtype=np.bool_)
+    mask[0, 0, 0] = True
+    mask[1, 1, 1] = True
+    mask[3, 0, 3] = True
+
+    assert _connected_component_count_26n(mask) == 2
+    assert _connected_component_count_26n(np.zeros_like(mask)) == 0
 
 
 def _load_prediction_adapter(path: Path, **overrides):
@@ -410,6 +421,9 @@ def test_exact_native_vessel_uses_offset_and_writes_complete_outputs(tmp_path):
     assert record["centerline_chamfer_distance_mm"] == pytest.approx(
         0.0, abs=1e-6
     )
+    assert record["prediction_connected_component_count_26n"] == 1
+    assert record["ground_truth_connected_component_count_26n"] == 1
+    assert record["connected_component_count_absolute_error_26n"] == 0
 
     summary = json.loads((output_dir / "evaluation_summary.json").read_text())
     assert summary["protocol"]["evaluation_voxel_spacing_xyz_mm"] == [
@@ -422,6 +436,15 @@ def test_exact_native_vessel_uses_offset_and_writes_complete_outputs(tmp_path):
     assert summary["macro_centerline_chamfer_distance_mm"] == pytest.approx(
         0.0, abs=1e-6
     )
+    assert summary["macro_prediction_connected_component_count_26n"] == 1.0
+    assert (
+        summary[
+            "macro_prediction_connected_component_count_26n_standard_error"
+        ]
+        is None
+    )
+    assert summary["macro_ground_truth_connected_component_count_26n"] == 1.0
+    assert summary["macro_connected_component_count_absolute_error_26n"] == 0.0
 
     graph_path = output_dir / "graphs" / "validation" / "1.npz"
     mask_path = output_dir / "masks" / "validation" / "1.npz"
@@ -451,6 +474,9 @@ def test_exact_native_vessel_uses_offset_and_writes_complete_outputs(tmp_path):
         np.testing.assert_array_equal(
             masks["prediction_mask_zyx"], masks["ground_truth_mask_zyx"]
         )
+        assert int(masks["prediction_connected_component_count_26n"]) == 1
+        assert int(masks["ground_truth_connected_component_count_26n"]) == 1
+        assert int(masks["connected_component_connectivity"]) == 26
 
     assert (output_dir / "per_case_metrics.csv").is_file()
     assert (output_dir / "evaluation_summary.csv").is_file()
@@ -745,6 +771,76 @@ def test_mixed_validation_and_test_cases_write_by_split_aggregates(tmp_path):
     assert (output_dir / "graphs" / "test" / "2.npz").is_file()
     assert (output_dir / "masks" / "validation" / "1.npz").is_file()
     assert (output_dir / "masks" / "test" / "2.npz").is_file()
+
+
+def test_connected_component_count_reports_mean_and_standard_error(tmp_path):
+    prediction_dir = tmp_path / "predictions"
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "metrics"
+
+    raw_points = np.column_stack(
+        (
+            np.arange(-1.25, 1.5, 0.5, dtype=np.float32),
+            np.full(6, 0.25, dtype=np.float32),
+            np.full(6, 0.25, dtype=np.float32),
+        )
+    )
+    one_component = np.zeros((8, 8, 8), dtype=np.float32)
+    one_component[4, 4, 1:7] = 1.0
+    three_components = one_component.copy()
+    three_components[0, 0, 0] = 1.0
+    three_components[7, 7, 7] = 1.0
+
+    for case_id, prediction in (
+        ("1", one_component),
+        ("2", three_components),
+    ):
+        _save_prediction(
+            prediction_dir / "test" / f"{case_id}.npz",
+            prediction,
+            case_id=case_id,
+            dataset_split="test",
+        )
+        _save_raw_vessel(
+            raw_dir / case_id / "original.npz",
+            raw_points,
+            radius_mm=0.24,
+            coordinate_frame="projection_centered",
+            case_id=case_id,
+        )
+
+    _run_directory_evaluation(prediction_dir, raw_dir, output_dir)
+
+    records = json.loads((output_dir / "per_case_metrics.json").read_text())
+    assert [
+        record["prediction_connected_component_count_26n"]
+        for record in records
+    ] == [1, 3]
+    assert [
+        record["ground_truth_connected_component_count_26n"]
+        for record in records
+    ] == [1, 1]
+    assert [
+        record["connected_component_count_absolute_error_26n"]
+        for record in records
+    ] == [0, 2]
+
+    summary = json.loads((output_dir / "evaluation_summary.json").read_text())
+    assert summary["macro_prediction_connected_component_count_26n"] == 2.0
+    assert summary[
+        "macro_prediction_connected_component_count_26n_standard_error"
+    ] == pytest.approx(1.0)
+    assert summary[
+        "macro_prediction_connected_component_count_26n_num_cases"
+    ] == 2
+    assert summary["macro_ground_truth_connected_component_count_26n"] == 1.0
+    assert summary[
+        "macro_ground_truth_connected_component_count_26n_standard_error"
+    ] == pytest.approx(0.0)
+    assert summary["macro_connected_component_count_absolute_error_26n"] == 1.0
+    assert summary[
+        "macro_connected_component_count_absolute_error_26n_standard_error"
+    ] == pytest.approx(1.0)
 
 
 def test_voxel_ground_truth_masks_metrics_to_partial_valid_fov(tmp_path):
