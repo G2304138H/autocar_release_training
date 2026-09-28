@@ -21,5 +21,7 @@ batch_size: 1
 num_workers: 0
 random_seed: ${seed}
 minimum_train_pair_angle_deg: 30.0
+min_train_views: 2
+max_train_views: 2
 excluded_train_case_ids: ["288", "421"]
 pin_memory: true

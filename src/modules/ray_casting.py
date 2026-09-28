@@ -106,6 +106,9 @@ class SparseBackwardProjection(nn.Module):
         is an optional ray-mode restriction for ablations.
     support_views:
         Minimum number of distinct views which must back-project to a voxel.
+    adaptive_support_views:
+        Clamp ``support_views`` to the supplied view count, so one-view inputs
+        retain voxels supported by their single projection.
     fusion:
         ``"mean"`` preserves the encoder channel count. ``"concat"`` follows
         the paper literally and requires every input view to support a voxel.
@@ -148,6 +151,7 @@ class SparseBackwardProjection(nn.Module):
         *,
         max_pixel_distance: float = 0.5,
         support_views: int = 2,
+        adaptive_support_views: bool = False,
         fusion: str = "mean",
         backend: str = "auto",
         ray_chunk_size: int = 4096,
@@ -210,6 +214,7 @@ class SparseBackwardProjection(nn.Module):
         )
         self.max_pixel_distance = float(max_pixel_distance)
         self.support_views = int(support_views)
+        self.adaptive_support_views = bool(adaptive_support_views)
         self.fusion = fusion
         self.backend = backend
         self.ray_chunk_size = int(ray_chunk_size)
@@ -239,6 +244,11 @@ class SparseBackwardProjection(nn.Module):
         if self.fusion == "mean":
             return per_view_channels
         return per_view_channels * int(view_count)
+
+    def _required_support(self, view_count: int) -> int:
+        if self.adaptive_support_views:
+            return min(self.support_views, view_count)
+        return self.support_views
 
     def _truncated_distance_transform(self, mask: Tensor) -> Tensor:
         """Return exact pixel-centre EDT values within the required halo.
@@ -979,7 +989,7 @@ class SparseBackwardProjection(nn.Module):
                 torch.ones_like(kept_indices, dtype=support_count.dtype),
             )
 
-        keep = support_count >= self.support_views
+        keep = support_count >= self._required_support(distance_maps.shape[0])
         kept_coordinates = coordinates[keep]
         if kept_coordinates.numel() == 0:
             return (
@@ -1009,7 +1019,7 @@ class SparseBackwardProjection(nn.Module):
         voxel_count = size_x * size_y * size_z
         all_coordinates: list[Tensor] = []
         all_features: list[Tensor] = []
-        require_all_views = self.support_views == distance_maps.shape[0]
+        require_all_views = self._required_support(distance_maps.shape[0]) == distance_maps.shape[0]
         for start in range(0, voxel_count, self.voxel_chunk_size):
             stop = min(start + self.voxel_chunk_size, voxel_count)
             coordinates = self._coordinates_from_linear_range(
@@ -1061,7 +1071,7 @@ class SparseBackwardProjection(nn.Module):
                     (0, output_channels), dtype=dtype, device=device
                 ),
             )
-        if self.support_views > len(view_results):
+        if self._required_support(len(view_results)) > len(view_results):
             raise ValueError(
                 f"support_views={self.support_views} exceeds the {len(view_results)} inputs."
             )
@@ -1075,7 +1085,7 @@ class SparseBackwardProjection(nn.Module):
         unique_keys, inverse, support_counts = torch.unique(
             all_keys, sorted=True, return_inverse=True, return_counts=True
         )
-        keep = support_counts >= self.support_views
+        keep = support_counts >= self._required_support(len(view_results))
         kept_keys = unique_keys[keep]
         union_to_kept = torch.full(
             (unique_keys.numel(),), -1, dtype=torch.long, device=all_keys.device
@@ -1096,7 +1106,7 @@ class SparseBackwardProjection(nn.Module):
                 fused / support_counts[keep].to(fused.dtype)[:, None]
             ).to(all_features.dtype)
         else:
-            if self.support_views != len(view_results):
+            if self._required_support(len(view_results)) != len(view_results):
                 raise ValueError(
                     "concat fusion requires support_views to equal the number of views."
                 )
@@ -1162,11 +1172,12 @@ class SparseBackwardProjection(nn.Module):
                 "active_masks is a legacy ray-mode override and cannot be "
                 "used with candidate_mode='voxel_grid'."
             )
-        if self.support_views > view_count:
+        required_support = self._required_support(view_count)
+        if required_support > view_count:
             raise ValueError(
                 f"support_views={self.support_views} exceeds view_count={view_count}."
             )
-        if self.fusion == "concat" and self.support_views != view_count:
+        if self.fusion == "concat" and required_support != view_count:
             raise ValueError("concat fusion requires all views to support every retained voxel.")
 
         all_coordinates: list[Tensor] = []

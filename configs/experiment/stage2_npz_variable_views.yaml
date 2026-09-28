@@ -1,0 +1,33 @@
+# @package _global_
+
+defaults:
+  - override /data: stage2_npz
+  - override /model: autocar_npz_variable_views
+
+tags: ["autocar", "stage2_npz", "voxel_supervision", "variable_views"]
+seed: 42
+test: true
+
+data:
+  min_train_views: 1
+  max_train_views: 7
+
+trainer:
+  min_epochs: 1
+  max_epochs: 200
+  check_val_every_n_epoch: 1
+  # Native volumes currently require micro-batch 1. On one GPU this gives an
+  # effective batch of 4, rather than claiming the paper's four-GPU setup.
+  accumulate_grad_batches: 4
+  # Full precision avoids spconv's implicit-GEMM tuner failure on Ada GPUs.
+  # Clipping is a practical stability choice not specified by the paper.
+  gradient_clip_val: 0.5
+  precision: 32-true
+
+callbacks:
+  model_checkpoint:
+    monitor: val/masked_dice_3d
+    mode: max
+  early_stopping:
+    monitor: val/masked_dice_3d
+    mode: max

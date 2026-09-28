@@ -61,3 +61,14 @@ def test_launcher_enables_numerical_troubleshooting_mode():
     command = launcher._hydra_command(args, settings)
 
     assert "model.numerical_debug=true" in command
+
+
+def test_launcher_selects_variable_view_model_and_training_range():
+    args = launcher._parser().parse_args(
+        ["--artery", "lca", "--skip-preflight", "--min-input-views", "1",
+         "--max-input-views", "7"]
+    )
+    command = launcher._hydra_command(args, launcher._resolved_settings(args))
+    assert "experiment=stage2_npz_lca_variable_views" in command
+    assert "data.min_train_views=1" in command
+    assert "data.max_train_views=7" in command

@@ -1,4 +1,6 @@
 import pytest
+import sys
+import types
 
 
 torch = pytest.importorskip("torch")
@@ -53,3 +55,45 @@ def test_encoder_native_mode_avoids_unrequested_resizing():
 def test_encoder_input_resize_rejects_non_view_batches(shape):
     with pytest.raises(ValueError, match=r"\[B,V,H,W\]"):
         AutoCAR._resize_encoder_input(torch.zeros(shape), (512, 512))
+
+
+def test_variable_view_model_accepts_one_and_seven_views(monkeypatch):
+    class _FakeUNet(torch.nn.Module):
+        def __init__(self, *args):
+            super().__init__()
+
+        def forward(self, volume):
+            return volume
+
+    fake_spconv = types.ModuleType("src.modules.spconv_unet")
+    fake_spconv.SpconvUNet18A = _FakeUNet
+    fake_spconv.SpconvUNet34C = _FakeUNet
+    monkeypatch.setitem(sys.modules, "src.modules.spconv_unet", fake_spconv)
+    model = AutoCAR({
+        "sparse_backend": "spconv",
+        "expected_view_count": None,
+        "min_view_count": 1,
+        "max_view_count": 7,
+        "encoder2d": {"out_ch": 12, "input": "mask"},
+        "ray_casting": {
+            "bbox_min": [-1, -1, -1], "bbox_max": [1, 1, 1], "LODs": [1],
+            "support_views": 2, "adaptive_support_views": True,
+            "fusion": "mean", "include_distance_feature": True,
+        },
+        "unet3d": {"in_channels": 13, "out_channels": 2},
+    })
+    monkeypatch.setattr(
+        model, "_encode_at_working_resolution",
+        lambda images: images[:, :, None].expand(-1, -1, 12, -1, -1),
+    )
+    monkeypatch.setattr(
+        model.ray_casting, "forward",
+        lambda distance, features, matrices: (features, torch.ones(1, 3)),
+    )
+    for view_count in (1, 7):
+        masks = torch.ones(1, view_count, 8, 8)
+        matrices = torch.eye(4).repeat(1, view_count, 1, 1)
+        prediction, _ = model(masks, matrices)
+        assert prediction.shape == (1, view_count, 12, 8, 8)
+    with pytest.raises(ValueError, match="1 to 7 views"):
+        model(torch.ones(1, 8, 8, 8), torch.eye(4).repeat(1, 8, 1, 1))

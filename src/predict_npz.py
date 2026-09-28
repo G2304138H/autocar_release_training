@@ -76,11 +76,11 @@ def export_predictions(args: argparse.Namespace) -> dict[str, Any]:
             "CUDA device for prediction. Pass --device cuda on the Linux GPU "
             "environment, or use a checkpoint trained with a CPU-capable backend."
         )
-    if model.recon_net.expected_view_count != len(args.view_indices):
+    if not model.recon_net.supports_view_count(len(args.view_indices)):
         raise ValueError(
-            "The checkpoint expects "
-            f"{model.recon_net.expected_view_count} views, but --view-indices "
-            f"contains {len(args.view_indices)}."
+            "The checkpoint accepts "
+            f"{model.recon_net.min_view_count} to {model.recon_net.max_view_count} "
+            f"views, but --view-indices contains {len(args.view_indices)}."
         )
     model.to(device)
     model.freeze()
@@ -115,13 +115,17 @@ def export_predictions(args: argparse.Namespace) -> dict[str, Any]:
         selected_case_ids = None
         case_selection = {"kind": "all_discovered_export_only"}
 
+    expected_labels = args.expected_view_labels
+    default_labels = ("RAO 25, CAU 35", "LAO 5, CRA 40")
+    if expected_labels == default_labels and tuple(args.view_indices) != (0, 6):
+        expected_labels = None
     dataset = Stage2NPZDataset(
         args.projections,
         args.voxels,
         view_mode="fixed",
         fixed_view_indices=args.view_indices,
         fixed_view_labels=(
-            None if args.skip_anchor_label_check else args.expected_view_labels
+            None if args.skip_anchor_label_check else expected_labels
         ),
         output_type="torch",
         case_ids=selected_case_ids,
@@ -160,7 +164,10 @@ def export_predictions(args: argparse.Namespace) -> dict[str, Any]:
             dense = dense_tensor.detach().numpy()
 
             case_id = str(sample["case_id"])
-            pair_angle_deg = float(sample["pair_angle_deg"])
+            pair_angle_deg = (
+                float(sample["pair_angle_deg"])
+                if "pair_angle_deg" in sample else None
+            )
             view_labels = list(sample.get("view_labels", ()))
             output_path = output_directory / f"{case_id}.npz"
             if output_path.exists() and not args.overwrite:
@@ -175,7 +182,10 @@ def export_predictions(args: argparse.Namespace) -> dict[str, Any]:
                 prediction_volume_zyx=dense.astype(dtype, copy=False),
                 case_id=np.asarray(case_id),
                 view_indices=np.asarray(sample["view_indices"], dtype=np.int64),
-                pair_angle_deg=np.asarray(pair_angle_deg, dtype=np.float32),
+                pair_angle_deg=np.asarray(
+                    np.nan if pair_angle_deg is None else pair_angle_deg,
+                    dtype=np.float32,
+                ),
                 view_labels=np.asarray(view_labels),
                 volume_axis_order=np.asarray("zyx"),
                 bbox_min_xyz_mm=projection.bbox_min.detach().cpu().numpy(),
@@ -238,6 +248,8 @@ def export_predictions(args: argparse.Namespace) -> dict[str, Any]:
         "case_selection": case_selection,
         "projection_protocol": {
             "expected_view_count": model.recon_net.expected_view_count,
+            "min_view_count": model.recon_net.min_view_count,
+            "max_view_count": model.recon_net.max_view_count,
             "candidate_mode": projection.candidate_mode,
             "distance_sampling": projection.distance_sampling,
             "max_pixel_distance": projection.max_pixel_distance,
@@ -281,12 +293,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--split", choices=("train", "val", "test"), default="test"
     )
-    parser.add_argument("--view-indices", nargs=2, type=int, default=(0, 6))
+    parser.add_argument("--view-indices", nargs="+", type=int, default=(0, 6))
     parser.add_argument(
         "--expected-view-labels",
-        nargs=2,
+        nargs="+",
         default=("RAO 25, CAU 35", "LAO 5, CRA 40"),
-        metavar=("VIEW_0_LABEL", "VIEW_1_LABEL"),
+        metavar="VIEW_LABEL",
         help="Expected anchor_clinical_views labels at --view-indices.",
     )
     parser.add_argument(

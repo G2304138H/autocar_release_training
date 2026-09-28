@@ -115,3 +115,21 @@ def test_support_count_cannot_exceed_input_views():
     with pytest.raises(ValueError, match="exceeds view_count"):
         module(sdf, features, projections, active_masks=masks)
 
+
+@pytest.mark.parametrize("view_features", [(2.0,), (2.0, 4.0), (2.0,) * 7])
+def test_adaptive_support_keeps_fixed_width_features(view_features):
+    module = SparseBackwardProjection(
+        [-1, -1, -1], [1, 1, 1], [1.0],
+        backend="raw", fusion="mean", support_views=2,
+        adaptive_support_views=True, candidate_mode="voxel_grid",
+    )
+    sdf, features, projections, _ = _inputs(view_features)
+    result, _ = module(sdf, features, projections)
+    reference_sdf, reference_features, reference_projections, _ = _inputs(
+        (sum(view_features) / len(view_features),)
+    )
+    reference, _ = module(reference_sdf, reference_features, reference_projections)
+    assert result.features.shape[0] > 0
+    assert result.features.shape[1] == 1
+    torch.testing.assert_close(result.coordinates, reference.coordinates)
+    torch.testing.assert_close(result.features, reference.features)

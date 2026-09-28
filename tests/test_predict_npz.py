@@ -64,6 +64,19 @@ def test_primary_cli_defaults_to_test_split_anchor_pair():
     )
 
 
+def test_prediction_cli_accepts_variable_view_indices():
+    args = build_parser().parse_args(
+        [
+            "--checkpoint", "model.ckpt",
+            "--projections", "projections",
+            "--voxels", "voxels",
+            "--output-directory", "predictions",
+            "--view-indices", "0", "1", "2", "3", "4", "5", "6",
+        ]
+    )
+    assert args.view_indices == [0, 1, 2, 3, 4, 5, 6]
+
+
 def test_unavailable_cuda_device_is_rejected(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)

@@ -24,9 +24,17 @@ class AutoCAR(torch.nn.Module):
         super().__init__()
         cfg = OmegaConf.create(cfg)
         self.sparse_backend = str(cfg.get("sparse_backend", "minkowski"))
-        self.expected_view_count = int(cfg.get("expected_view_count", 2))
-        if self.expected_view_count < 1:
-            raise ValueError("expected_view_count must be positive.")
+        expected_view_count = cfg.get("expected_view_count", 2)
+        self.expected_view_count = (
+            None if expected_view_count is None else int(expected_view_count)
+        )
+        if self.expected_view_count is None:
+            self.min_view_count = int(cfg.get("min_view_count", 1))
+            self.max_view_count = int(cfg.get("max_view_count", 7))
+        else:
+            self.min_view_count = self.max_view_count = self.expected_view_count
+        if not 1 <= self.min_view_count <= self.max_view_count:
+            raise ValueError("View counts must satisfy 1 <= min_view_count <= max_view_count.")
         encoder_channels = int(cfg.encoder2d.out_ch)
         self.encoder_input = str(
             cfg.encoder2d.get("input", "legacy_exp_distance")
@@ -60,6 +68,9 @@ class AutoCAR(torch.nn.Module):
                 "max_pixel_distance", 0.5
             ),
             support_views=cfg.ray_casting.get("support_views", 2),
+            adaptive_support_views=cfg.ray_casting.get(
+                "adaptive_support_views", False
+            ),
             fusion=cfg.ray_casting.get("fusion", "mean"),
             backend=self.sparse_backend,
             ray_chunk_size=cfg.ray_casting.get("ray_chunk_size", 4096),
@@ -80,8 +91,17 @@ class AutoCAR(torch.nn.Module):
                 "distance_sampling", "nearest"
             ),
         )
+        if self.expected_view_count is None and self.ray_casting.fusion != "mean":
+            raise ValueError("Variable view counts require ray_casting.fusion='mean'.")
+        if (
+            not self.ray_casting.adaptive_support_views
+            and self.ray_casting.support_views > self.min_view_count
+        ):
+            raise ValueError(
+                "ray_casting.support_views exceeds the minimum view count."
+            )
         expected_input_channels = self.ray_casting.output_channels(
-            encoder_channels, self.expected_view_count
+            encoder_channels, self.min_view_count
         )
         configured_input_channels = int(cfg.unet3d.in_channels)
         if configured_input_channels != expected_input_channels:
@@ -197,6 +217,13 @@ class AutoCAR(torch.nn.Module):
         # V = masks.shape[1]
         # H, W = masks.shape[2:]
 
+        if masks.ndim != 4:
+            raise ValueError(f"masks must be [B,V,H,W], got {tuple(masks.shape)}.")
+        if not self.supports_view_count(masks.shape[1]):
+            raise ValueError(
+                f"Expected {self.min_view_count} to {self.max_view_count} views, "
+                f"got {masks.shape[1]}."
+            )
         masks_float = masks.to(dtype=torch.float32)
         if self.encoder_input == "mask":
             distance_maps = self.ray_casting.distance_maps_from_masks(
@@ -220,10 +247,6 @@ class AutoCAR(torch.nn.Module):
                 f"masks={tuple(masks.shape[-2:])}."
             )
 
-        if masks.shape[1] != self.expected_view_count:
-            raise ValueError(
-                f"Expected {self.expected_view_count} views, got {masks.shape[1]}."
-            )
         sparse_volume, world_coords = self.ray_casting(
             distance_maps, feature, world2pix4x4
         )
@@ -234,6 +257,9 @@ class AutoCAR(torch.nn.Module):
             )
         pred = self.unet3d(sparse_volume)
         return pred, world_coords
+
+    def supports_view_count(self, view_count: int) -> bool:
+        return self.min_view_count <= view_count <= self.max_view_count
 
 
 if __name__ == "__main__":

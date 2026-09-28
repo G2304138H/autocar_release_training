@@ -86,8 +86,8 @@ class EvaluationOptions:
     expected_imager_pixel_spacing_mm: float | None
     fallback_imager_pixel_spacing_mm: float | None
     fallback_sid_mm: float | None
-    view_indices: tuple[int, int]
-    view_labels: tuple[str, str] | None
+    view_indices: tuple[int, ...]
+    view_labels: tuple[str, ...] | None
     view_direction_options: Mapping[str, Any]
     view_translation_options: Mapping[str, Any]
     compute_paper_metrics: bool
@@ -462,20 +462,20 @@ def resolve_evaluation_options(
 
     raw_view_indices = config.get("evaluation_view_indices", (0, 1))
     if not isinstance(raw_view_indices, (list, tuple)):
-        raise ValueError("evaluation_view_indices must contain exactly two integers.")
+        raise ValueError("evaluation_view_indices must contain one or more integers.")
     view_indices = tuple(
         _integer(value, label="evaluation_view_indices")
         for value in raw_view_indices
     )
-    if len(view_indices) != 2 or len(set(view_indices)) != 2 or min(view_indices) < 0:
+    if not view_indices or len(set(view_indices)) != len(view_indices) or min(view_indices) < 0:
         raise ValueError(
-            "evaluation_view_indices must contain two distinct non-negative integers."
+            "evaluation_view_indices must contain distinct non-negative integers."
         )
     raw_eval_num_views = config.get("eval_num_views", len(view_indices))
     if isinstance(raw_eval_num_views, (list, tuple)):
         raise ValueError(
-            "AutoCAR checkpoints have a fixed input width; eval_num_views sweeps "
-            "are not supported. Run one compatible checkpoint/config per view count."
+            "eval_num_views sweeps are not supported in one run. Run one "
+            "evaluation configuration per view count."
         )
     if _integer(raw_eval_num_views, label="eval_num_views") != len(view_indices):
         raise ValueError(
@@ -490,20 +490,21 @@ def resolve_evaluation_options(
         )
     raw_view_labels = config.get(
         "evaluation_view_labels",
-        ("RAO 25, CAU 35", "LAO 5, CAU 30"),
+        ("RAO 25, CAU 35", "LAO 5, CAU 30") if len(view_indices) == 2 else None,
     )
-    view_labels: tuple[str, str] | None
+    view_labels: tuple[str, ...] | None
     if raw_view_labels is None:
         view_labels = None
     else:
         if not isinstance(raw_view_labels, (list, tuple)):
             raise ValueError(
-                "evaluation_view_labels must be null or contain exactly two strings."
+                "evaluation_view_labels must be null or contain strings."
             )
         labels = tuple(str(value).strip() for value in raw_view_labels)
-        if len(labels) != 2 or any(not label for label in labels):
+        if len(labels) != len(view_indices) or any(not label for label in labels):
             raise ValueError(
-                "evaluation_view_labels must be null or contain exactly two non-empty strings."
+                "evaluation_view_labels must be null or match "
+                "evaluation_view_indices with non-empty strings."
             )
         view_labels = labels
 
@@ -746,7 +747,7 @@ def resolve_evaluation_options(
         expected_imager_pixel_spacing_mm=expected_pixel_spacing,
         fallback_imager_pixel_spacing_mm=fallback_pixel_spacing,
         fallback_sid_mm=fallback_sid,
-        view_indices=(view_indices[0], view_indices[1]),
+        view_indices=view_indices,
         view_labels=view_labels,
         view_direction_options=view_direction_options,
         view_translation_options=view_translation_options,
@@ -825,6 +826,12 @@ def _numpy(value: Any) -> np.ndarray:
     if isinstance(value, torch.Tensor):
         return value.detach().cpu().numpy()
     return np.asarray(value)
+
+
+def _optional_pair_angle(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(np.asarray(_numpy(value)).item())
 
 
 def _array_like(reference: Any, value: np.ndarray) -> Any:
@@ -1640,6 +1647,12 @@ def _prediction_protocol(model: AutoCARVoxelLit) -> dict[str, Any]:
     projection = model.recon_net.ray_casting
     return {
         "expected_view_count": model.recon_net.expected_view_count,
+        "min_view_count": getattr(
+            model.recon_net, "min_view_count", model.recon_net.expected_view_count
+        ),
+        "max_view_count": getattr(
+            model.recon_net, "max_view_count", model.recon_net.expected_view_count
+        ),
         "candidate_mode": projection.candidate_mode,
         "distance_sampling": projection.distance_sampling,
         "max_pixel_distance": projection.max_pixel_distance,
@@ -1688,6 +1701,10 @@ def _save_prediction_npz(
         sample.get("view_translation_xyz_mm", np.zeros(3, dtype=np.float32)),
         dtype=np.float32,
     ).reshape(3)
+    pair_angle = _optional_pair_angle(sample.get("pair_angle_deg"))
+    evaluated_pair_angle = _optional_pair_angle(
+        sample.get("evaluated_pair_angle_deg", sample.get("pair_angle_deg"))
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
@@ -1698,9 +1715,11 @@ def _save_prediction_npz(
         dataset_split=np.asarray(dataset_split),
         evaluation_role=np.asarray("final"),
         view_indices=_numpy(sample["view_indices"]).astype(np.int64, copy=False),
-        pair_angle_deg=np.asarray(float(sample["pair_angle_deg"]), dtype=np.float32),
+        pair_angle_deg=np.asarray(
+            np.nan if pair_angle is None else pair_angle, dtype=np.float32
+        ),
         evaluated_pair_angle_deg=np.asarray(
-            float(sample.get("evaluated_pair_angle_deg", sample["pair_angle_deg"])),
+            np.nan if evaluated_pair_angle is None else evaluated_pair_angle,
             dtype=np.float32,
         ),
         view_labels=np.asarray(labels),
@@ -2109,9 +2128,16 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             "This checkpoint uses the spconv backend, which requires an NVIDIA "
             "CUDA device for evaluation."
         )
-    if model.recon_net.expected_view_count != len(options.view_indices):
+    expected_view_count = model.recon_net.expected_view_count
+    compatible_view_count = (
+        expected_view_count == len(options.view_indices)
+        if expected_view_count is not None
+        else model.recon_net.supports_view_count(len(options.view_indices))
+    )
+    if not compatible_view_count:
         raise ValueError(
-            f"The checkpoint expects {model.recon_net.expected_view_count} views, "
+            f"The checkpoint accepts {model.recon_net.min_view_count} to "
+            f"{model.recon_net.max_view_count} views, "
             f"but evaluation_view_indices contains {len(options.view_indices)}."
         )
     model.to(device)
@@ -2260,9 +2286,9 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 "eval_num_views": len(options.view_indices),
                 "view_indices": [int(value) for value in _numpy(sample["view_indices"])],
                 "view_labels": list(sample.get("view_labels", ())),
-                "pair_angle_deg": float(sample["pair_angle_deg"]),
-                "evaluated_pair_angle_deg": float(
-                    sample.get("evaluated_pair_angle_deg", sample["pair_angle_deg"])
+                "pair_angle_deg": _optional_pair_angle(sample.get("pair_angle_deg")),
+                "evaluated_pair_angle_deg": _optional_pair_angle(
+                    sample.get("evaluated_pair_angle_deg", sample.get("pair_angle_deg"))
                 ),
                 "prediction": str(prediction_path),
                 "inference_elapsed_ms": elapsed_ms,

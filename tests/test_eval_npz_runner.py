@@ -100,6 +100,67 @@ def test_config_resolves_relative_paths_and_visualization_alias(tmp_path):
     assert options.compute_paper_metrics is False
 
 
+@pytest.mark.parametrize("view_count", [1, 4])
+def test_variable_view_evaluation_keeps_view_count_and_optional_pair_angle(
+    tmp_path, view_count
+):
+    (tmp_path / "checkpoint.ckpt").touch()
+    (tmp_path / "projections").mkdir()
+    (tmp_path / "voxels").mkdir()
+    (tmp_path / "splits.json").write_text(
+        json.dumps({"train": ["1"], "val": ["2"], "test": ["3"]}),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "eval.json"
+    config_path.write_text(
+        json.dumps({
+            "checkpoint_path": "checkpoint.ckpt",
+            "projection_source": "projections",
+            "voxel_source": "voxels",
+            "split_json_path": "splits.json",
+            "eval_output_dir": "results",
+            "evaluation_view_indices": list(range(view_count)),
+            "evaluation_view_labels": None,
+            "eval_num_views": view_count,
+        }),
+        encoding="utf-8",
+    )
+    options = resolve_evaluation_options(config_path)
+    assert options.view_indices == tuple(range(view_count))
+    assert options.view_labels is None
+
+    sample = {
+        "case_id": "2",
+        "view_indices": torch.arange(view_count),
+        "theta_deg": torch.zeros(view_count),
+        "phi_deg": torch.zeros(view_count),
+        "world2pix4x4": torch.eye(4).repeat(view_count, 1, 1),
+        "projection_center_offset_xyz_mm": torch.zeros(3),
+    }
+    evaluated, _ = evaluation_model_camera_sample(
+        sample, options.view_direction_options
+    )
+    assert evaluated["evaluated_pair_angle_deg"] is None
+    prediction_path = tmp_path / "prediction.npz"
+    _save_prediction_npz(
+        prediction_path,
+        np.ones((2, 3, 4), dtype=np.float32),
+        evaluated,
+        dataset_split="validation",
+        checkpoint=tmp_path / "checkpoint.ckpt",
+        protocol={
+            "bbox_min_xyz_mm": [-1.0, -1.0, -1.0],
+            "bbox_max_xyz_mm": [1.0, 1.0, 1.0],
+            "voxel_size_mm": 0.5,
+        },
+        output_dtype="float16",
+    )
+    with np.load(prediction_path, allow_pickle=False) as payload:
+        np.testing.assert_array_equal(payload["view_indices"], np.arange(view_count))
+        assert np.isnan(payload["pair_angle_deg"])
+        assert np.isnan(payload["evaluated_pair_angle_deg"])
+
+
 def test_prediction_npz_uses_stable_volume_and_evaluation_fields(tmp_path):
     path = tmp_path / "prediction.npz"
     sample = {

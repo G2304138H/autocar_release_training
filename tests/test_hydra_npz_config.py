@@ -60,6 +60,31 @@ def test_stage2_gpu_debug_profile_does_not_force_spconv_onto_cpu():
 
 
 @pytest.mark.parametrize(
+    "experiment",
+    ["stage2_npz_variable_views", "stage2_npz_lca_variable_views",
+     "stage2_npz_rca_variable_views"],
+)
+def test_variable_view_model_composes_with_one_to_seven_training_views(experiment):
+    config_directory = Path(__file__).parents[1] / "configs"
+    with initialize_config_dir(
+        version_base="1.3", config_dir=str(config_directory.resolve())
+    ):
+        config = compose(
+            config_name="train.yaml",
+            overrides=[
+                f"experiment={experiment}",
+            ],
+        )
+    reconstruction = config.model.recon_net
+    assert reconstruction.expected_view_count is None
+    assert (reconstruction.min_view_count, reconstruction.max_view_count) == (1, 7)
+    assert reconstruction.ray_casting.fusion == "mean"
+    assert reconstruction.ray_casting.adaptive_support_views is True
+    assert reconstruction.unet3d.in_channels == 13
+    assert (config.data.min_train_views, config.data.max_train_views) == (1, 7)
+
+
+@pytest.mark.parametrize(
     ("experiment", "artery", "pixel_spacing", "projection_suffix"),
     [
         (

@@ -401,6 +401,66 @@ class Stage2NPZDatasetTests(unittest.TestCase):
                 dataset.set_epoch(epoch)
                 self.assertGreaterEqual(dataset[0]["pair_angle_deg"], 20.0)
 
+    def test_random_count_samples_one_to_seven_views_per_case_and_epoch(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection_path = root / "projection.npz"
+            voxel_path = root / "42.npz"
+            _write_projection(projection_path, num_views=7)
+            _write_voxel(voxel_path)
+            first = Stage2NPZDataset(
+                projection_path, voxel_path, view_mode="random_count",
+                min_views=1, max_views=7, random_seed=1234,
+                minimum_pair_angle_deg=20.0,
+            )
+            second = Stage2NPZDataset(
+                projection_path, voxel_path, view_mode="random_count",
+                min_views=1, max_views=7, random_seed=1234,
+                minimum_pair_angle_deg=20.0,
+            )
+            counts = set()
+            selections = set()
+            for epoch in range(100):
+                first.set_epoch(epoch)
+                second.set_epoch(epoch)
+                sample = first[0]
+                selected = sample["view_indices"]
+                np.testing.assert_array_equal(selected, second[0]["view_indices"])
+                self.assertEqual(len(selected), len(np.unique(selected)))
+                self.assertEqual(sample["images"].shape[0], len(selected))
+                counts.add(len(selected))
+                selections.add(tuple(selected.tolist()))
+            self.assertEqual(counts, set(range(1, 8)))
+            self.assertGreater(len(selections), 7)
+
+    def test_random_count_accepts_a_single_available_view(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection_path = root / "projection.npz"
+            voxel_path = root / "42.npz"
+            _write_projection(projection_path, num_views=1)
+            _write_voxel(voxel_path)
+            dataset = Stage2NPZDataset(
+                projection_path, voxel_path, view_mode="random_count",
+                min_views=1, max_views=7,
+            )
+            self.assertEqual(dataset[0]["images"].shape[0], 1)
+            self.assertNotIn("pair_angle_deg", dataset[0])
+
+    def test_fixed_view_mode_accepts_single_and_seven_view_subsets(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection_path = root / "projection.npz"
+            voxel_path = root / "42.npz"
+            _write_projection(projection_path, num_views=7)
+            _write_voxel(voxel_path)
+            for selected in ((3,), tuple(range(7))):
+                dataset = Stage2NPZDataset(
+                    projection_path, voxel_path, view_mode="fixed",
+                    fixed_view_indices=selected,
+                )
+                np.testing.assert_array_equal(dataset[0]["view_indices"], selected)
+
     def test_case_filter_ignores_unpaired_cases_outside_split(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

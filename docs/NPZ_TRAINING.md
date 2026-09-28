@@ -1,8 +1,8 @@
 # Training and evaluating AutoCAR on paired NPZ data
 
-This document defines the maintained path for training a static two-view
-AutoCAR reconstruction model from pre-rendered vessel masks and voxel ground
-truth. Per-case visualization can derive a static centerline-radius graph and
+This document defines the maintained two-view benchmark and an optional
+one-to-seven-view AutoCAR training path from pre-rendered vessel masks and voxel
+ground truth. Per-case visualization can derive a static centerline-radius graph and
 surface from predicted occupancy. That post-processing is explicitly excluded
 from training and quantitative voxel metrics; dynamic temporal graph
 reconstruction remains outside this path.
@@ -194,11 +194,12 @@ Stage2NPZDataset(
     projection_source,
     voxel_source,
     *,
-    view_mode="all",                 # "all", "fixed", or "random_pair"
+    view_mode="all",                 # "all", "fixed", "random_pair", "random_count"
     fixed_view_indices=None,
     fixed_view_labels=None,
     random_seed=0,
     minimum_pair_angle_deg=0.0,
+    min_views=1, max_views=7,        # random_count range
     output_type="numpy",             # "numpy" or "torch"
     case_ids=None,
     case_id_mode="literal",          # or "imagecas_numeric"
@@ -252,7 +253,11 @@ Supported view policies are:
 - `random_pair`: deterministic two-view sampling keyed by seed, case, and
   epoch for training. The maintained data module sets a 30-degree minimum
   separation to avoid nearly redundant views.
-- `fixed`: one predeclared pair for validation and primary comparison.
+- `random_count`: one view count and subset per case per epoch, reproducibly
+  keyed by seed, case, and epoch. A case with fewer than `max_views` available
+  views samples up to its available count. Multi-view draws include a pair
+  satisfying `minimum_pair_angle_deg`.
+- `fixed`: one predeclared subset for validation and primary comparison.
 - `all`: retain all available views for pair-ensemble experiments.
 
 The primary validation protocol uses fixed slots `[0,6]`. In the supplied view
@@ -263,9 +268,13 @@ metadata, not from reconstruction labels, and is inside the training policy's
 labels in every validation and test case before treating the slots as shared
 semantics.
 
-AutoCAR is natively a two-view model. Every comparison must therefore receive
-the same two selected views. A model using all seven projections has a larger
-information budget and must be reported as a separate protocol. Likewise,
+The original benchmark configuration is a two-view model. The optional
+variable-view configuration uses mean feature fusion and a 13-channel 3D
+backbone, so one checkpoint accepts one through seven projections. With one
+view, the retained voxels are those consistent with that projection inside the
+configured 3D box; their depth is ambiguous. With two or more views, voxels
+need support from at least two projections. Report variable-view results as a
+separate protocol because the information budget changes. Likewise,
 evaluating and fusing all 21 pairs would be an ensemble extension, not the
 native AutoCAR result.
 
@@ -435,6 +444,52 @@ Then launch the independent full training runs:
 /export/home2/reny0012/vir_env/bin/python scripts/train_imagecas_npz.py --artery lca --max-epochs 200
 /export/home2/reny0012/vir_env/bin/python scripts/train_imagecas_npz.py --artery rca --max-epochs 200
 ```
+
+For variable-view training on the supplied artery datasets, run either artery
+with the view range. The launcher selects its variable-view experiment when
+the range differs from two views:
+
+```bash
+/export/home2/reny0012/vir_env/bin/python scripts/train_imagecas_npz.py \
+  --artery lca --min-input-views 1 --max-input-views 7 --max-epochs 200
+```
+
+For another paired NPZ dataset, use the generic experiment directly:
+
+```bash
+python -m src.train experiment=stage2_npz_variable_views \
+  data.projection_source=/path/to/projections \
+  data.voxel_source=/path/to/voxels \
+  data.split_json=/path/to/splits.json
+```
+
+Each epoch visits every training case once (micro-batch 1). The dataset draws
+a new count uniformly from 1 to 7 and a reproducible subset for each case and
+epoch. Validation and test retain the fixed `[0,6]` pair. Single-view voxel
+sets can be substantially larger than two-view intersections, so profile GPU
+memory with the one-batch debug run before a long job. A variable-view
+checkpoint uses a different 3D input width and cannot directly load the
+two-view concatenation checkpoint.
+
+After training, evaluate the same variable-view checkpoint with the first 1,
+2, and 4 source views. The launcher uses `[0]`, `[0,1]`, and `[0,1,2,3]`, runs
+the same selected cases through the paper-metric evaluator, and writes separate
+configs and results under `views_1/`, `views_2/`, and `views_4/`:
+
+```bash
+/export/home2/reny0012/vir_env/bin/python scripts/evaluate_variable_views_npz.py \
+  --artery lca \
+  --checkpoint /path/to/variable_view_run/checkpoints/best.ckpt \
+  --output-root /path/to/variable_view_evaluation \
+  --split test
+```
+
+Use `--artery rca` for RCA. To check the generated JSON configurations without
+starting inference, add `--dry-run`. For other paired NPZ datasets, omit
+`--artery` and pass `--projection-source`, `--voxel-source`, `--split-json`, and
+the detector metadata options as needed. The checkpoint must be from the
+variable-view model; the original fixed two-view checkpoint cannot evaluate
+one or four views.
 
 For a run that has produced non-finite logits, enable the opt-in numerical
 troubleshooting mode:

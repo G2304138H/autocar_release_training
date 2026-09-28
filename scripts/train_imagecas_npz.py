@@ -91,6 +91,8 @@ def _parser() -> argparse.ArgumentParser:
         "--evaluation-view-indices", type=int, nargs=2, metavar=("FIRST", "SECOND")
     )
     parser.add_argument("--max-epochs", type=int, default=200)
+    parser.add_argument("--min-input-views", type=int, default=2)
+    parser.add_argument("--max-input-views", type=int, default=2)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--log-dir", type=Path)
@@ -226,11 +228,15 @@ def _preflight(settings: dict[str, object]) -> None:
 def _hydra_command(
     args: argparse.Namespace, settings: dict[str, object]
 ) -> list[str]:
+    variable_views = (args.min_input_views, args.max_input_views) != (2, 2)
+    experiment = str(settings["experiment"])
+    if variable_views:
+        experiment += "_variable_views"
     command = [
         sys.executable,
         "-m",
         "src.train",
-        f"experiment={settings['experiment']}",
+        f"experiment={experiment}",
         f"data.projection_source={settings['projection_source']}",
         f"data.voxel_source={settings['voxel_source']}",
         f"data.split_json={settings['split_json']}",
@@ -243,6 +249,8 @@ def _hydra_command(
         f"[{int(settings['view_indices'][0])},{int(settings['view_indices'][1])}]",
         f"data.num_workers={args.num_workers}",
         f"trainer.max_epochs={args.max_epochs}",
+        f"data.min_train_views={args.min_input_views}",
+        f"data.max_train_views={args.max_input_views}",
         "data.excluded_train_case_ids=["
         + ",".join(
             f'"{case_id}"' for case_id in settings["excluded_train_case_ids"]
@@ -277,6 +285,11 @@ def main() -> None:
         raise ValueError("--max-epochs must be positive.")
     if args.num_workers < 0:
         raise ValueError("--num-workers cannot be negative.")
+    if not 1 <= args.min_input_views <= args.max_input_views <= 7:
+        raise ValueError(
+            "--min-input-views and --max-input-views must satisfy "
+            "1 <= min <= max <= 7."
+        )
     if args.preflight_only and args.skip_preflight:
         raise ValueError("--preflight-only and --skip-preflight are incompatible.")
     settings = _resolved_settings(args)

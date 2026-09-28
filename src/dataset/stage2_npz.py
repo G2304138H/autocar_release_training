@@ -35,7 +35,7 @@ from src.geometry.projection_geometry import (
 
 PathLike = Union[str, os.PathLike]
 PathSource = Union[PathLike, Sequence[PathLike]]
-_VALID_VIEW_MODES = {"all", "fixed", "random_pair"}
+_VALID_VIEW_MODES = {"all", "fixed", "random_pair", "random_count"}
 _VALID_OUTPUT_TYPES = {"numpy", "torch"}
 
 
@@ -208,9 +208,10 @@ class Stage2NPZDataset:
         voxel_source: Voxel NPZ file, directory, or sequence thereof.  A voxel
             file's scalar ``case_id`` is used when present; otherwise its stem
             is the case ID (for example, ``1.npz`` is case ``"1"``).
-        view_mode: ``"all"``, ``"fixed"`` or ``"random_pair"``.
-        fixed_view_indices: Exactly two zero-based view positions for fixed
-            mode.  Their supplied order is preserved.
+        view_mode: ``"all"``, ``"fixed"``, ``"random_pair"``, or
+            ``"random_count"``.
+        fixed_view_indices: One or more distinct zero-based view positions
+            for fixed mode. Their supplied order is preserved.
         fixed_view_labels: Optional expected ``anchor_clinical_views`` labels
             at those two positions. When supplied, missing or inconsistent
             per-case metadata is rejected before training/evaluation.
@@ -245,6 +246,8 @@ class Stage2NPZDataset:
         fixed_view_labels: Optional[Sequence[str]] = None,
         random_seed: int = 0,
         minimum_pair_angle_deg: float = 0.0,
+        min_views: int = 1,
+        max_views: int = 7,
         output_type: str = "numpy",
         case_ids: Optional[Sequence[str]] = None,
         case_id_mode: str = "literal",
@@ -269,22 +272,30 @@ class Stage2NPZDataset:
                 f"case_id_mode must be one of {VALID_CASE_ID_MODES}, "
                 f"got {case_id_mode!r}."
             )
+        if isinstance(min_views, bool) or isinstance(max_views, bool) or not (
+            1 <= int(min_views) <= int(max_views)
+        ):
+            raise ValueError(
+                "min_views and max_views must satisfy 1 <= min_views <= max_views."
+            )
         if view_mode == "fixed":
-            if fixed_view_indices is None or len(fixed_view_indices) != 2:
+            if fixed_view_indices is None or len(fixed_view_indices) < 1:
                 raise ValueError(
-                    "fixed_view_indices must contain exactly two indices in fixed mode."
+                    "fixed_view_indices must contain at least one index in fixed mode."
                 )
             fixed_indices = tuple(int(index) for index in fixed_view_indices)
-            if len(set(fixed_indices)) != 2 or min(fixed_indices) < 0:
+            if len(set(fixed_indices)) != len(fixed_indices) or min(fixed_indices) < 0:
                 raise ValueError(
-                    "fixed_view_indices must contain two distinct non-negative indices."
+                    "fixed_view_indices must contain distinct non-negative indices."
                 )
             fixed_labels = None
             if fixed_view_labels is not None:
                 fixed_labels = tuple(str(value).strip() for value in fixed_view_labels)
-                if len(fixed_labels) != 2 or any(not value for value in fixed_labels):
+                if len(fixed_labels) != len(fixed_indices) or any(
+                    not value for value in fixed_labels
+                ):
                     raise ValueError(
-                        "fixed_view_labels must contain exactly two non-empty labels."
+                        "fixed_view_labels must match fixed_view_indices with non-empty labels."
                     )
         else:
             if fixed_view_indices is not None or fixed_view_labels is not None:
@@ -427,6 +438,8 @@ class Stage2NPZDataset:
         self.fixed_view_labels = fixed_labels
         self.random_seed = int(random_seed)
         self.minimum_pair_angle_deg = minimum_pair_angle_deg
+        self.min_views = int(min_views)
+        self.max_views = int(max_views)
         self.output_type = output_type
         self.case_id_mode = case_id_mode
         self.expected_imager_pixel_spacing_mm = expected_pixel_spacing
@@ -440,7 +453,7 @@ class Stage2NPZDataset:
         return len(self.records)
 
     def set_epoch(self, epoch: int) -> None:
-        """Set the epoch used for deterministic random-pair selection."""
+        """Set the epoch used for deterministic per-case view selection."""
 
         epoch = int(epoch)
         if epoch < 0:
@@ -461,10 +474,6 @@ class Stage2NPZDataset:
     ) -> np.ndarray:
         if self.view_mode == "all":
             return np.arange(num_views, dtype=np.int64)
-        if num_views < 2:
-            raise Stage2NPZError(
-                f"Case {case_id!r} has {num_views} view(s); two are required."
-            )
         if self.view_mode == "fixed":
             indices = np.asarray(self.fixed_view_indices, dtype=np.int64)
             if np.any(indices >= num_views):
@@ -473,6 +482,51 @@ class Stage2NPZDataset:
                     f"{case_id!r} with {num_views} views."
                 )
             return indices
+
+        if self.view_mode == "random_count":
+            if num_views < self.min_views:
+                raise Stage2NPZError(
+                    f"Case {case_id!r} has {num_views} view(s), fewer than "
+                    f"min_views={self.min_views}."
+                )
+            selection_key = (
+                f"stage2-npz-count-v1\0{self.random_seed}\0{self.epoch}\0{case_id}"
+            ).encode("utf-8")
+            seed = int.from_bytes(
+                hashlib.blake2b(selection_key, digest_size=8).digest(), "little"
+            )
+            generator = np.random.default_rng(seed)
+            count = int(
+                generator.integers(
+                    self.min_views, min(self.max_views, num_views) + 1
+                )
+            )
+            if count == 1:
+                return np.asarray([generator.integers(num_views)], dtype=np.int64)
+            # Keep the existing angular constraint for every multi-view draw:
+            # one selected pair must meet it; remaining views are unrestricted.
+            pairs = np.asarray(
+                list(itertools.combinations(range(num_views), 2)), dtype=np.int64
+            )
+            if self.minimum_pair_angle_deg > 0.0:
+                directions = view_directions_world[pairs]
+                cosines = np.sum(directions[:, 0] * directions[:, 1], axis=1)
+                angles = np.rad2deg(np.arccos(np.clip(cosines, -1.0, 1.0)))
+                pairs = pairs[angles >= self.minimum_pair_angle_deg]
+            if len(pairs) == 0:
+                raise Stage2NPZError(
+                    f"Case {case_id!r} has no view pair separated by at least "
+                    f"{self.minimum_pair_angle_deg:g} degrees."
+                )
+            pair = pairs[generator.integers(len(pairs))]
+            remaining = np.setdiff1d(np.arange(num_views), pair)
+            extra = generator.choice(remaining, size=count - 2, replace=False)
+            return np.sort(np.concatenate((pair, extra))).astype(np.int64)
+
+        if num_views < 2:
+            raise Stage2NPZError(
+                f"Case {case_id!r} has {num_views} view(s); two are required."
+            )
 
         candidates = np.asarray(
             list(itertools.combinations(range(num_views), 2)), dtype=np.int64

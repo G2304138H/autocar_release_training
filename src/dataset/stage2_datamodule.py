@@ -17,9 +17,8 @@ from src.dataset.stage2_npz import Stage2NPZDataset
 class Stage2NPZDataModule(LightningDataModule):
     """Create deterministic train, validation, and test NPZ loaders.
 
-    Training samples a reproducible pair from all available views. Validation
-    and test use one predeclared pair so the primary AutoCAR result is not an
-    implicitly cherry-picked multi-pair ensemble.
+    Training samples reproducible per-case views each epoch. Validation and
+    test use one predeclared pair for a stable comparison.
     """
 
     def __init__(
@@ -37,6 +36,8 @@ class Stage2NPZDataModule(LightningDataModule):
         num_workers: int = 0,
         random_seed: int = 42,
         minimum_train_pair_angle_deg: float = 30.0,
+        min_train_views: int = 2,
+        max_train_views: int = 2,
         excluded_train_case_ids: Sequence[str] = (),
         case_id_mode: str = "literal",
         expected_imager_pixel_spacing_mm: float | None = None,
@@ -81,6 +82,15 @@ class Stage2NPZDataModule(LightningDataModule):
         self.minimum_train_pair_angle_deg = float(
             minimum_train_pair_angle_deg
         )
+        if isinstance(min_train_views, bool) or isinstance(max_train_views, bool) or not (
+            1 <= int(min_train_views) <= int(max_train_views)
+        ):
+            raise ValueError(
+                "min_train_views and max_train_views must satisfy "
+                "1 <= min_train_views <= max_train_views."
+            )
+        self.min_train_views = int(min_train_views)
+        self.max_train_views = int(max_train_views)
         self.excluded_train_case_ids = tuple(excluded_train_case_ids)
         self.case_id_mode = str(case_id_mode)
         self.expected_imager_pixel_spacing_mm = (
@@ -135,9 +145,15 @@ class Stage2NPZDataModule(LightningDataModule):
             self.data_train = Stage2NPZDataset(
                 **common,
                 case_ids=splits["train"],
-                view_mode="random_pair",
+                view_mode=(
+                    "random_pair"
+                    if (self.min_train_views, self.max_train_views) == (2, 2)
+                    else "random_count"
+                ),
                 random_seed=self.random_seed,
                 minimum_pair_angle_deg=self.minimum_train_pair_angle_deg,
+                min_views=self.min_train_views,
+                max_views=self.max_train_views,
             )
             self.data_val = Stage2NPZDataset(
                 **common,
@@ -168,7 +184,7 @@ class Stage2NPZDataModule(LightningDataModule):
             shuffle=shuffle,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            # Worker copies must be recreated so epoch-dependent random pairs
+            # Worker copies must be recreated so epoch-dependent random views
             # observe Stage2NPZDataset.set_epoch().
             persistent_workers=False,
         )
