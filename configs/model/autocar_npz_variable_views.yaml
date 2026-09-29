@@ -35,9 +35,10 @@ recon_net:
     # value makes nearest-sampled EDT inputs identically zero. Prefer 1.5 only
     # after a full CUDA backward profile on the worst eligible pair [5,6].
     max_pixel_distance: 0.5
-    # One view defines candidates along its projection rays. With two or more
-    # views, require support from at least two projections.
-    support_views: 2
+    # Intersect all supplied views. Any-two-of-seven support creates a large
+    # union of pairwise hulls that can exceed spconv's int32 indexing limit.
+    # With one view, retain its ray volume inside the reconstruction box.
+    support_views: all
     adaptive_support_views: true
     fusion: mean
     include_distance_feature: true

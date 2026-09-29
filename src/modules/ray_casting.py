@@ -106,6 +106,7 @@ class SparseBackwardProjection(nn.Module):
         is an optional ray-mode restriction for ablations.
     support_views:
         Minimum number of distinct views which must back-project to a voxel.
+        Use ``"all"`` to intersect every supplied view, including a single view.
     adaptive_support_views:
         Clamp ``support_views`` to the supplied view count, so one-view inputs
         retain voxels supported by their single projection.
@@ -150,7 +151,7 @@ class SparseBackwardProjection(nn.Module):
         LODs: Sequence[float],
         *,
         max_pixel_distance: float = 0.5,
-        support_views: int = 2,
+        support_views: int | str = 2,
         adaptive_support_views: bool = False,
         fusion: str = "mean",
         backend: str = "auto",
@@ -178,8 +179,12 @@ class SparseBackwardProjection(nn.Module):
             raise ValueError("max_pixel_distance must be finite.")
         if float(max_pixel_distance) <= 0:
             raise ValueError("max_pixel_distance must be positive.")
-        if support_views < 1:
-            raise ValueError("support_views must be at least one.")
+        if support_views != "all" and (
+            isinstance(support_views, bool)
+            or not isinstance(support_views, int)
+            or support_views < 1
+        ):
+            raise ValueError("support_views must be a positive integer or 'all'.")
         if fusion not in self._VALID_FUSIONS:
             raise ValueError(f"fusion must be one of {sorted(self._VALID_FUSIONS)}.")
         if backend not in self._VALID_BACKENDS:
@@ -213,7 +218,7 @@ class SparseBackwardProjection(nn.Module):
             int(ceil(length / self._voxel_size)) for length in extent
         )
         self.max_pixel_distance = float(max_pixel_distance)
-        self.support_views = int(support_views)
+        self.support_views = support_views
         self.adaptive_support_views = bool(adaptive_support_views)
         self.fusion = fusion
         self.backend = backend
@@ -246,6 +251,8 @@ class SparseBackwardProjection(nn.Module):
         return per_view_channels * int(view_count)
 
     def _required_support(self, view_count: int) -> int:
+        if self.support_views == "all":
+            return view_count
         if self.adaptive_support_views:
             return min(self.support_views, view_count)
         return self.support_views

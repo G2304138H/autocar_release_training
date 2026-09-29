@@ -133,3 +133,27 @@ def test_adaptive_support_keeps_fixed_width_features(view_features):
     assert result.features.shape[1] == 1
     torch.testing.assert_close(result.coordinates, reference.coordinates)
     torch.testing.assert_close(result.features, reference.features)
+
+
+@pytest.mark.parametrize("candidate_mode", ["ray", "voxel_grid"])
+def test_all_view_support_intersects_seven_views_and_accepts_one(candidate_mode):
+    module = SparseBackwardProjection(
+        [-1, -1, -1], [1, 1, 1], [1.0], backend="raw",
+        fusion="mean", support_views="all", candidate_mode=candidate_mode,
+    )
+    sdf, features, projections, _ = _inputs((2.0,))
+    single, _ = module(sdf, features, projections)
+    assert single.features.shape[0] > 0
+
+    sdf, features, projections, _ = _inputs((2.0,) * 7)
+    complete, _ = module(sdf, features, projections)
+    torch.testing.assert_close(complete.coordinates, single.coordinates)
+    torch.testing.assert_close(complete.features, single.features)
+
+    # Six supporting views cannot keep voxels when the seventh rejects them.
+    sdf[:, -1] = 1.0
+    intersection, _ = module(sdf, features, projections)
+    assert intersection.features.shape[0] == 0
+    module.support_views = 2
+    pairwise_union, _ = module(sdf, features, projections)
+    assert pairwise_union.features.shape[0] > 0

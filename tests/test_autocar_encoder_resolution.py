@@ -77,7 +77,7 @@ def test_variable_view_model_accepts_one_and_seven_views(monkeypatch):
         "encoder2d": {"out_ch": 12, "input": "mask"},
         "ray_casting": {
             "bbox_min": [-1, -1, -1], "bbox_max": [1, 1, 1], "LODs": [1],
-            "support_views": 2, "adaptive_support_views": True,
+            "support_views": "all", "adaptive_support_views": False,
             "fusion": "mean", "include_distance_feature": True,
         },
         "unet3d": {"in_channels": 13, "out_channels": 2},

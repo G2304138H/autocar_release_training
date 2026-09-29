@@ -94,7 +94,8 @@ class AutoCAR(torch.nn.Module):
         if self.expected_view_count is None and self.ray_casting.fusion != "mean":
             raise ValueError("Variable view counts require ray_casting.fusion='mean'.")
         if (
-            not self.ray_casting.adaptive_support_views
+            self.ray_casting.support_views != "all"
+            and not self.ray_casting.adaptive_support_views
             and self.ray_casting.support_views > self.min_view_count
         ):
             raise ValueError(
@@ -255,7 +256,22 @@ class AutoCAR(torch.nn.Module):
                 "Sparse backward projection produced an empty visual hull; "
                 "check camera geometry, masks, and max_pixel_distance."
             )
-        pred = self.unet3d(sparse_volume)
+        try:
+            pred = self.unet3d(sparse_volume)
+        except RuntimeError as error:
+            if "data exceed int32 range" not in str(error):
+                raise
+            raise RuntimeError(
+                "spconv exceeded its int32 tensor indexing limit inside the 3D "
+                f"backbone: projected_voxels={world_coords.shape[0]}, "
+                f"input_views={masks.shape[1]}, "
+                f"support_views={self.ray_casting.support_views}, "
+                f"voxel_size={self.ray_casting.voxel_size}. "
+                "Use ray_casting.support_views='all' for multi-view intersection. "
+                "If this occurs with all-view support (especially one view), "
+                "use a coarser final ray_casting.LODs voxel size. Reducing "
+                "voxel_chunk_size does not reduce the final sparse tensor."
+            ) from error
         return pred, world_coords
 
     def supports_view_count(self, view_count: int) -> bool:

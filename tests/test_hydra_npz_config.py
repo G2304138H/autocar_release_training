@@ -80,6 +80,7 @@ def test_variable_view_model_composes_with_one_to_seven_training_views(experimen
     assert (reconstruction.min_view_count, reconstruction.max_view_count) == (1, 7)
     assert reconstruction.ray_casting.fusion == "mean"
     assert reconstruction.ray_casting.adaptive_support_views is True
+    assert reconstruction.ray_casting.support_views == "all"
     assert reconstruction.unet3d.in_channels == 13
     assert (config.data.min_train_views, config.data.max_train_views) == (1, 7)
 

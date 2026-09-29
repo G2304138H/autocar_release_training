@@ -273,7 +273,7 @@ variable-view configuration uses mean feature fusion and a 13-channel 3D
 backbone, so one checkpoint accepts one through seven projections. With one
 view, the retained voxels are those consistent with that projection inside the
 configured 3D box; their depth is ambiguous. With two or more views, voxels
-need support from at least two projections. Report variable-view results as a
+need support from every supplied projection. Report variable-view results as a
 separate protocol because the information budget changes. Likewise,
 evaluating and fusing all 21 pairs would be an ensemble extension, not the
 native AutoCAR result.
@@ -470,6 +470,21 @@ sets can be substantially larger than two-view intersections, so profile GPU
 memory with the one-batch debug run before a long job. A variable-view
 checkpoint uses a different 3D input width and cannot directly load the
 two-view concatenation checkpoint.
+
+If spconv reports `your data exceed int32 range`, an internal feature tensor
+has exceeded the kernel's 32-bit indexing limit. Earlier variable-view configs
+used support from any two views, which creates a union of pairwise hulls as
+more views are supplied. The current config uses `support_views: all` to
+intersect all supplied projections. This changes candidate selection, so keep
+the support policy consistent when comparing runs. To continue an earlier run
+with the corrected policy, use the updated code and pass `--checkpoint` to the
+training launcher with the final override
+`model.recon_net.ray_casting.support_views=all`. New checkpoints save this
+policy; existing checkpoints retain their original inference configuration.
+Single-view ray volumes can still be large. If the error persists with all-view
+support, a coarser grid such as `model.recon_net.ray_casting.LODs=[1.0]` reduces
+voxel count but changes reconstruction resolution. Reducing `voxel_chunk_size`
+only changes projection workspace size, not the final sparse tensor size.
 
 After training, evaluate the same variable-view checkpoint with the first 1,
 2, and 4 source views. The launcher uses `[0]`, `[0,1]`, and `[0,1,2,3]`, runs
