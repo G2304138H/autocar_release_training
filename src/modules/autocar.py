@@ -261,16 +261,21 @@ class AutoCAR(torch.nn.Module):
         except RuntimeError as error:
             if "data exceed int32 range" not in str(error):
                 raise
+            support_hint = (
+                "Use ray_casting.support_views='all' for multi-view intersection. "
+                if masks.shape[1] > 1 and self.ray_casting.support_views != "all"
+                else ""
+            )
             raise RuntimeError(
-                "spconv exceeded its int32 tensor indexing limit inside the 3D "
+                "spconv exceeded its int32 tensor indexing limit for the 3D "
                 f"backbone: projected_voxels={world_coords.shape[0]}, "
                 f"input_views={masks.shape[1]}, "
                 f"support_views={self.ray_casting.support_views}, "
                 f"voxel_size={self.ray_casting.voxel_size}. "
-                "Use ray_casting.support_views='all' for multi-view intersection. "
-                "If this occurs with all-view support (especially one view), "
-                "use a coarser final ray_casting.LODs voxel size. Reducing "
-                "voxel_chunk_size does not reduce the final sparse tensor."
+                f"{support_hint}Use a coarser final ray_casting.LODs voxel size "
+                "(for example [1.0] instead of [0.5]). Reducing voxel_chunk_size "
+                "does not reduce the final sparse tensor. "
+                f"Underlying error: {error}"
             ) from error
         return pred, world_coords
 

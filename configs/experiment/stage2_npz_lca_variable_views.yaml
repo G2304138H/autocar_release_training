@@ -13,6 +13,14 @@ data:
   min_train_views: 1
   max_train_views: 7
 
+model:
+  recon_net:
+    ray_casting:
+      # Case 150, view 5 produces 4.32M voxels at 0.5 mm and exceeds the
+      # FP32 decoder's int32 indexing limit. Use one consistent grid for all
+      # LCA training/validation view counts; checkpoints save this geometry.
+      LODs: [1.0]
+
 trainer:
   min_epochs: 1
   max_epochs: 200

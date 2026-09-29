@@ -486,6 +486,29 @@ support, a coarser grid such as `model.recon_net.ray_casting.LODs=[1.0]` reduces
 voxel count but changes reconstruction resolution. Reducing `voxel_chunk_size`
 only changes projection workspace size, not the final sparse tensor size.
 
+The LCA variable-view experiment now uses a **1.0 mm** grid for every view
+count. Case 150 / view 5 produced 4,323,055 projected voxels at 0.5 mm; its
+128-channel FP32 decoder skip would occupy 2,213,404,160 bytes, exceeding the
+2,147,483,647-byte indexing limit. The backbone now checks this planned size
+before running its convolutions and checks each actual skip concatenation.
+These checks address feature indexing, not all possible GPU memory limits.
+RCA and the generic experiment still default to 0.5 mm.
+
+For a consistent LCA run, train from the start at the new resolution:
+
+```bash
+python scripts/train_imagecas_npz.py \
+  --artery lca --min-input-views 1 --max-input-views 7 --max-epochs 200 \
+  -- 'model.recon_net.ray_casting.LODs=[1.0]'
+```
+
+The 3D weight shapes do not depend on voxel size, so adding `--checkpoint`
+before `--` can technically resume an earlier run. That changes the training
+geometry midway and carries forward validation/checkpoint history from the
+old resolution; start a new run for a consistent experiment. The voxel size
+is saved in new checkpoint hyperparameters and used by evaluation. Existing
+0.5 mm checkpoints do not change when the experiment YAML is edited.
+
 After training, evaluate the same variable-view checkpoint with the first 1,
 2, and 4 source views. The launcher uses `[0]`, `[0,1]`, and `[0,1,2,3]`, runs
 the same selected cases through the paper-metric evaluator, and writes separate

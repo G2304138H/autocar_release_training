@@ -13,6 +13,8 @@ import math
 import torch
 from torch import nn
 
+from src.modules.sparse_limits import check_spconv_feature_size
+
 try:
     import spconv.pytorch as spconv
 except ImportError as exc:  # pragma: no cover - exercised in CUDA environment
@@ -38,6 +40,13 @@ def _cat_same_coordinates(left, right):
             "Sparse skip tensors are not coordinate-aligned. This normally "
             "indicates inconsistent spconv indice keys or input coordinates."
         )
+    dtype = torch.promote_types(left.features.dtype, right.features.dtype)
+    check_spconv_feature_size(
+        left.features.shape[0],
+        left.features.shape[1] + right.features.shape[1],
+        torch.empty((), dtype=dtype).element_size(),
+        stage="decoder skip concatenation",
+    )
     return _replace_feature(left, torch.cat([left.features, right.features], dim=1))
 
 
@@ -270,6 +279,16 @@ class SpconvUNetBase(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def forward(self, sparse_tensor):
+        # Inverse convolutions restore the original coordinates at stage8.
+        # In full precision its skip matrix therefore has this known size.
+        # Under CUDA autocast, check actual dtypes later at each concatenation.
+        if not torch.is_autocast_enabled():
+            check_spconv_feature_size(
+                sparse_tensor.features.shape[0],
+                self.PLANES[7] + self.INIT_DIM,
+                sparse_tensor.features.element_size(),
+                stage="planned full-resolution decoder skip",
+            )
         out = self._activate(self.conv0(sparse_tensor), self.bn0)
         skip0 = out
 

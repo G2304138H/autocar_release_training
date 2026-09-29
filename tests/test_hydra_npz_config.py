@@ -83,6 +83,8 @@ def test_variable_view_model_composes_with_one_to_seven_training_views(experimen
     assert reconstruction.ray_casting.support_views == "all"
     assert reconstruction.unet3d.in_channels == 13
     assert (config.data.min_train_views, config.data.max_train_views) == (1, 7)
+    expected_voxel_size = 1.0 if experiment == "stage2_npz_lca_variable_views" else 0.5
+    assert list(reconstruction.ray_casting.LODs) == [expected_voxel_size]
 
 
 @pytest.mark.parametrize(
