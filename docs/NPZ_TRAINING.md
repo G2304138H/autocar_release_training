@@ -522,6 +522,15 @@ configs and results under `views_1/`, `views_2/`, and `views_4/`:
   --split test
 ```
 
+The launcher defaults to full paper-metric evaluation, including native-volume
+SSIM and centerline extraction. To export prediction volumes without these
+metrics, add `--prediction-only`. It retains the same test cases, geometry,
+checkpoint, and NPZ output format, and skips the metric warmup pass. Per-case
+console messages show model/dense export, NPZ saving, and metric stages;
+`progress/<case_id>.json` records timings as cases finish. A new output root
+keeps prediction-only exports separate from an existing metric run. Use
+`--view-counts 1 --max-cases 1` for a short timing check before all 75 cases.
+
 Use `--artery rca` for RCA. To check the generated JSON configurations without
 starting inference, add `--dry-run`. For other paired NPZ datasets, omit
 `--artery` and pass `--projection-source`, `--voxel-source`, `--split-json`, and
@@ -1224,3 +1233,15 @@ GPU acceptance requires:
 4. A short multi-case run writes and reloads a checkpoint.
 5. Evaluation emits per-case metrics and aggregate mean, standard deviation,
    and standard error without changing the declared protocol.
+
+### Evaluation progress logs
+
+The variable-view evaluator launches Python unbuffered and streams stdout and
+stderr to both the terminal and `<output-root>/logs/views_N.log` (appended on
+reruns). Timestamped messages identify dependency imports, checkpoint loading,
+device transfer, dataset indexing/loading, warmup, model forward, 2D encoder,
+back projection, 3D sparse backbone, and CPU dense export. Existing per-case
+messages cover NPZ saving and metrics. Module return messages do not synchronize
+CUDA; the overall model completion message does. The last stage-start message
+helps locate slow work but is not proof of a hang. These messages require restarting
+with the updated code; they cannot appear in an already-running old process.

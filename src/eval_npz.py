@@ -28,6 +28,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+def _progress(message: str) -> None:
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
+
+
+if __name__ == "__main__":
+    _progress("Evaluator started; importing NumPy, PyTorch, and model dependencies")
+
 import numpy as np
 import torch
 
@@ -798,6 +805,7 @@ def _forward_dense(
     device: torch.device,
     use_mixed_precision: bool,
 ) -> tuple[np.ndarray, float]:
+    _progress(f"Case {sample.get('case_id', '?')}: transferring inputs to {device}")
     masks = sample["images"][None, :, 0].to(device=device, dtype=torch.float32)
     matrices = sample["world2pix4x4"][None].to(device=device, dtype=torch.float32)
     precision_context = (
@@ -807,10 +815,32 @@ def _forward_dense(
     )
     _synchronize(device)
     started = time.perf_counter()
-    with precision_context:
-        prediction, _ = model.recon_net(masks, matrices)
+    _progress("Model forward started (includes distance maps and sparse reconstruction)")
+    handles = []
+    for name, label in (
+        ("encoder2d", "2D encoder"),
+        ("ray_casting", "Back projection"),
+        ("unet3d", "3D sparse backbone"),
+    ):
+        module = getattr(model.recon_net, name, None)
+        if isinstance(module, torch.nn.Module):
+            handles.append(module.register_forward_pre_hook(
+                lambda module, inputs, label=label: _progress(f"{label}: started")
+            ))
+            handles.append(module.register_forward_hook(
+                lambda module, inputs, output, label=label: _progress(
+                    f"{label}: returned (GPU work may still be pending)"
+                )
+            ))
+    try:
+        with precision_context:
+            prediction, _ = model.recon_net(masks, matrices)
+    finally:
+        for handle in handles:
+            handle.remove()
     _synchronize(device)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
+    _progress(f"Model forward finished in {elapsed_ms / 1000:.2f}s; rasterizing dense volume on CPU")
     projection = model.recon_net.ray_casting
     dense_tensor = rasterize_sparse_channel(
         prediction,
@@ -2123,7 +2153,9 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(output_dir / "resolved_config.json", options.resolved_config)
 
+    _progress(f"Evaluation mode={options.evaluation_mode}; views={options.view_indices}; output={output_dir}")
     device = _device(options.device)
+    _progress(f"Device={device}; loading checkpoint {options.checkpoint}")
     model = AutoCARVoxelLit.load_from_checkpoint(options.checkpoint, map_location="cpu")
     if model.sparse_backend == "spconv" and device.type != "cuda":
         raise RuntimeError(
@@ -2142,8 +2174,10 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             f"{model.recon_net.max_view_count} views, "
             f"but evaluation_view_indices contains {len(options.view_indices)}."
         )
+    _progress(f"Checkpoint loaded; moving model to {device}")
     model.to(device)
     model.freeze()
+    _progress("Model ready")
     protocol = _prediction_protocol(model)
     metric_protocol = {
         "voxel_shape": list(_PAPER_METRIC_SHAPE_ZYX[::-1]),
@@ -2194,6 +2228,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         "prediction_grid": protocol,
     }
     use_mixed_precision = device.type == "cuda" and options.precision == "16-mixed"
+    _progress("Indexing dataset and matching projection/voxel cases")
     dataset = Stage2NPZDataset(
         options.projection_source,
         options.voxel_source,
@@ -2214,6 +2249,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
         source_to_isocenter_mm=options.source_to_isocenter_mm,
     )
 
+    _progress(f"Dataset ready: {len(dataset)} selected cases")
     reports: list[dict[str, Any]] = []
     paper_metric_records: list[dict[str, Any]] = []
     prediction_records: list[dict[str, Any]] = []
@@ -2223,7 +2259,7 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
     warmup_performed = options.compute_paper_metrics
     with torch.inference_mode():
         if warmup_performed:
-            print("Running one untimed model warmup on the first selected case")
+            _progress("Warmup: loading first case (untimed extra inference for paper metrics)")
             warmup_sample, _ = evaluation_model_camera_sample(
                 dataset[0], options.view_direction_options
             )
@@ -2237,9 +2273,12 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 use_mixed_precision=use_mixed_precision,
             )
             del warmup_sample
+            _progress("Warmup finished")
         for index in range(len(dataset)):
             processing_started = time.perf_counter()
+            _progress(f"[{index + 1}/{len(dataset)}] Loading case from dataset")
             source_sample = dataset[index]
+            _progress(f"Case {source_sample['case_id']}: loaded; preparing cameras and views")
             sample, view_direction_records = evaluation_model_camera_sample(
                 source_sample, options.view_direction_options
             )
@@ -2863,8 +2902,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _progress("Dependencies imported; parsing evaluation arguments")
     args = build_parser().parse_args(argv)
     config_path = Path(args.config).expanduser().resolve()
+    _progress(f"Reading configuration {config_path}")
     raw_config = _load_json_object(config_path)
     from src.view_translation_robustness_npz import (
         is_view_translation_robustness_mode,

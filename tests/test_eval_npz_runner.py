@@ -620,3 +620,22 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
     )
     assert timing_summary["mean_processing_elapsed_ms"] > 0.0
     assert (output_dir / "evaluation_record.json").is_file()
+
+    # Prediction-only must export volumes without invoking either metric path.
+    from dataclasses import replace
+
+    def unexpected_metrics(*args, **kwargs):
+        raise AssertionError("Prediction-only mode invoked metrics")
+
+    monkeypatch.setattr(eval_npz, "evaluate_case", unexpected_metrics)
+    monkeypatch.setattr(eval_npz, "_paper_metric_case", unexpected_metrics)
+    prediction_dir = tmp_path / "prediction_only"
+    prediction_options = replace(
+        options, evaluation_mode="prediction", output_dir=prediction_dir
+    )
+    prediction_summary = run_evaluation(prediction_options)
+    assert (prediction_dir / "predictions/final/validation/2.npz").is_file()
+    assert not (prediction_dir / "metrics").exists()
+    assert prediction_summary["evaluation"]["metrics"] == {}
+    progress = json.loads((prediction_dir / "progress/2.json").read_text())
+    assert progress["metrics_seconds"] == 0.0

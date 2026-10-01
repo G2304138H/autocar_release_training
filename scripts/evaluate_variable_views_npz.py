@@ -163,10 +163,27 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(config, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
-        command = [sys.executable, "-m", "src.eval_npz", "--config", str(config_path)]
+        command = [sys.executable, "-u", "-m", "src.eval_npz", "--config", str(config_path)]
         print(" ".join(command), flush=True)
         if not args.dry_run:
-            subprocess.run(command, cwd=ROOT, check=True)
+            log_path = config_path.parent.parent / "logs" / f"{config_path.stem}.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            print(f"Evaluator console log: {log_path}", flush=True)
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write("\nCommand: " + " ".join(command) + "\n")
+                log.flush()
+                with subprocess.Popen(
+                    command, cwd=ROOT, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True, bufsize=1,
+                ) as process:
+                    assert process.stdout is not None
+                    for line in process.stdout:
+                        print(line, end="", flush=True)
+                        log.write(line)
+                        log.flush()
+                    returncode = process.wait()
+                if returncode:
+                    raise subprocess.CalledProcessError(returncode, command)
     return 0
 
 

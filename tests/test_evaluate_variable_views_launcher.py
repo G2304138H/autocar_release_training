@@ -3,6 +3,9 @@
 import json
 import tempfile
 import unittest
+import subprocess
+import sys
+from unittest.mock import patch
 from pathlib import Path
 
 from scripts.evaluate_variable_views_npz import build_parser, evaluation_configs, main
@@ -57,6 +60,39 @@ class VariableViewEvaluationLauncherTests(unittest.TestCase):
                 config = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(config["evaluation_view_indices"], list(range(count)))
                 self.assertEqual(config["evaluation_mode"], "paper_metric")
+
+
+    def test_child_output_is_logged_and_failure_propagates(self):
+        real_popen = subprocess.Popen
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            arguments = self._arguments(root) + ["--view-counts", "1"]
+
+            def child(command, **kwargs):
+                self.assertEqual(command[1:4], ["-u", "-m", "src.eval_npz"])
+                return real_popen(
+                    [sys.executable, "-u", "-c",
+                     "import sys; print('stage started'); print('failure detail', file=sys.stderr); sys.exit(3)"],
+                    **kwargs,
+                )
+
+            with patch("scripts.evaluate_variable_views_npz.subprocess.Popen", side_effect=child):
+                with self.assertRaises(subprocess.CalledProcessError) as error:
+                    main(arguments)
+            self.assertEqual(error.exception.returncode, 3)
+            log = (root / "results" / "logs" / "views_1.log").read_text()
+            self.assertIn("stage started", log)
+            self.assertIn("failure detail", log)
+
+    def test_prediction_only_skips_metric_mode_for_every_view_count(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            arguments = self._arguments(Path(temporary_directory))
+            args = build_parser().parse_args(arguments + ["--prediction-only"])
+            plans = evaluation_configs(args)
+            self.assertEqual(
+                [config["evaluation_mode"] for _, config in plans],
+                ["prediction"] * 3,
+            )
 
 
 if __name__ == "__main__":
