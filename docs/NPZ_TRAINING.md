@@ -1054,13 +1054,14 @@ numbers do not collide. `--prediction-method` accepts `auto`, `autocar`,
 uses that tag and otherwise accepts only a unique schema signature. The
 resolved method, volume key, original frame, origin convention, grid spacing,
 checkpoint provenance, split provenance, and any missing metadata are written
-to the report. By default predictions must also record the
-ordered input pair `view_indices=[0,1]`. Use
-`--expected-view-indices I J` only for a deliberately different protocol;
-`[0,6]` predictions are rejected by the default run rather than mixed with the
-strict two-view result. `--allow-missing-view-indices` is an explicit escape
-hatch for externally audited third-party volumes that cannot carry this
-metadata. Raw targets must provide sampled `(x,y,z,radius)` polylines. The
+to the report. By default evaluation accepts any number of input views and
+records available view indices without constraining them. Saved-volume metrics
+do not require input images or their view count. To audit a particular protocol,
+pass `--expected-view-indices 0` for one view, `--expected-view-indices 0 1`
+for two views, or any longer ordered list for more views. Explicit constraints
+reject mismatching recorded indices and missing indices; the latter can be
+allowed with `--allow-missing-view-indices`. Raw targets must provide sampled
+`(x,y,z,radius)` polylines. The
 default `--raw-vessel-key auto` resolves these verified schemas in order:
 
 1. `raw_vessel_code_mm` in millimetres;

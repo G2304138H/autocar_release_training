@@ -39,6 +39,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--split", choices=("val", "test", "val_test"), default="val_test")
     parser.add_argument("--max-cases", type=int)
+    parser.add_argument(
+        "--prediction-only", action="store_true",
+        help="Export prediction NPZs without Dice, SSIM, or centerline metrics.",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--precision", choices=("32", "16-mixed"), default="32")
     parser.add_argument("--output-dtype", choices=("float16", "float32"), default="float16")
@@ -86,7 +90,7 @@ def evaluation_configs(args: argparse.Namespace) -> list[tuple[Path, dict]]:
         "projection_source": str(projection_source),
         "voxel_source": str(voxel_source),
         "split_json_path": str(split_json),
-        "evaluation_mode": "paper_metric",
+        "evaluation_mode": "prediction" if args.prediction_only else "paper_metric",
         "eval_split": args.split,
         "num_eval_cases": args.max_cases if args.max_cases is not None else "all",
         "eval_case_ids": None,

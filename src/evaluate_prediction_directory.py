@@ -1907,22 +1907,25 @@ def _evaluate_case(
     expected_views = [int(value) for value in expected_view_indices]
     stored_views = prediction_metadata.get("view_indices")
     if stored_views is None:
-        if not allow_missing_view_indices:
+        if expected_views and not allow_missing_view_indices:
             raise ValueError(
                 f"{prediction_path} does not record view_indices. The strict "
                 f"evaluation expects {expected_views}; pass "
                 "--allow-missing-view-indices only for an externally audited "
                 "third-party prediction."
             )
-        view_indices_audit = "missing_explicitly_allowed"
+        view_indices_audit = (
+            "missing_explicitly_allowed" if allow_missing_view_indices
+            else "missing_no_view_constraint"
+        )
     else:
         stored_views = [int(value) for value in stored_views]
-        if stored_views != expected_views:
+        if expected_views and stored_views != expected_views:
             raise ValueError(
                 f"{prediction_path} used ordered view indices {stored_views}, "
                 f"but this evaluation requires {expected_views}."
             )
-        view_indices_audit = "matched"
+        view_indices_audit = "matched" if expected_views else "recorded_no_view_constraint"
     if normalized.volume_is_binary_mask:
         if prediction_domain == "logit":
             raise ValueError(
@@ -2685,12 +2688,11 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--prediction-threshold must lie in [0,1].")
     expected_views = tuple(int(value) for value in args.expected_view_indices)
     if (
-        len(expected_views) != 2
-        or any(value < 0 for value in expected_views)
-        or expected_views[0] == expected_views[1]
+        any(value < 0 for value in expected_views)
+        or len(set(expected_views)) != len(expected_views)
     ):
         raise ValueError(
-            "--expected-view-indices must contain two distinct non-negative "
+            "--expected-view-indices must contain distinct non-negative "
             "indices in input order."
         )
     canonical_evaluation_grid = VoxelGrid.from_bounds(
@@ -2723,10 +2725,11 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
         "three_dgrcar_alignment_requested": args.three_dgrcar_alignment,
         "case_id_override": args.case_id_override,
         "expected_view_indices": list(args.expected_view_indices),
+        "view_indices_constraint_enabled": bool(expected_views),
         "missing_view_indices_policy": (
             "explicitly_allowed"
             if args.allow_missing_view_indices
-            else "error"
+            else ("error" if expected_views else "allowed_no_view_constraint")
         ),
         "evaluation_voxel_spacing_xyz_mm": [
             _EVALUATION_VOXEL_SIZE_MM,
@@ -2997,18 +3000,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--expected-view-indices",
-        nargs=2,
+        nargs="+",
         type=int,
-        default=(0, 1),
-        metavar=("VIEW_1", "VIEW_2"),
-        help="Required ordered source-view pair recorded in prediction NPZs.",
+        default=(),
+        metavar="INDEX",
+        help=(
+            "Optional required ordered source-view indices, for any number of "
+            "views. By default saved volumes are evaluated without a view constraint."
+        ),
     )
     parser.add_argument(
         "--allow-missing-view-indices",
         action="store_true",
         help=(
-            "Allow third-party prediction NPZs without view_indices; pair "
-            "mismatches are never allowed."
+            "Allow prediction NPZs without view_indices even when expected "
+            "indices are specified; recorded mismatches still fail."
         ),
     )
     parser.add_argument(

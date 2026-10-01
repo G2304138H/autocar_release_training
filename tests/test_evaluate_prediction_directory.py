@@ -612,7 +612,8 @@ def test_native_voxel_ground_truth_requires_proven_center_offset(tmp_path):
         )
 
 
-def test_saved_prediction_view_pair_must_match_strict_zero_one(tmp_path):
+@pytest.mark.parametrize("view_indices", [(0,), (0, 6), (0, 1, 2, 3)])
+def test_saved_prediction_view_pair_must_match_strict_zero_one(tmp_path, view_indices):
     prediction_dir = tmp_path / "predictions"
     raw_dir = tmp_path / "raw"
     output_dir = tmp_path / "metrics"
@@ -621,7 +622,7 @@ def test_saved_prediction_view_pair_must_match_strict_zero_one(tmp_path):
     _save_prediction(
         prediction_dir / "validation" / "1.npz",
         prediction,
-        view_indices=(0, 6),
+        view_indices=view_indices,
     )
     _save_raw_vessel(
         raw_dir / "1" / "original.npz",
@@ -631,7 +632,25 @@ def test_saved_prediction_view_pair_must_match_strict_zero_one(tmp_path):
     )
 
     with pytest.raises(ValueError, match=r"requires \[0, 1\]"):
-        _run_directory_evaluation(prediction_dir, raw_dir, output_dir)
+        _run_directory_evaluation(
+            prediction_dir, raw_dir, output_dir,
+            "--expected-view-indices", "0", "1",
+        )
+
+    # A saved volume is valid regardless of the number of acquisition views.
+    _run_directory_evaluation(prediction_dir, raw_dir, output_dir)
+    record = json.loads((output_dir / "per_case_metrics.json").read_text())[0]
+    assert record["view_indices"] == list(view_indices)
+    assert record["view_indices_audit"] == "recorded_no_view_constraint"
+
+    _run_directory_evaluation(
+        prediction_dir, raw_dir, tmp_path / "constrained_metrics",
+        "--expected-view-indices", *map(str, view_indices),
+    )
+    record = json.loads(
+        (tmp_path / "constrained_metrics" / "per_case_metrics.json").read_text()
+    )[0]
+    assert record["view_indices_audit"] == "matched"
 
 
 def test_legacy_prediction_uses_offset_embedded_in_raw_vessel_npz(tmp_path):

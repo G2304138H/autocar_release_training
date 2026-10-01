@@ -59,7 +59,7 @@ from src.view_translation_npz import (
 
 
 _EVALUATION_SPLITS = frozenset({"val", "test", "val_test"})
-_EVALUATION_MODES = frozenset({"visualisation", "metric", "paper_metric"})
+_EVALUATION_MODES = frozenset({"visualisation", "metric", "paper_metric", "prediction"})
 _SPLIT_LABELS = {"val": "validation", "test": "test"}
 _CHECKPOINT_FILENAMES = {
     "best": "best.ckpt",
@@ -202,7 +202,7 @@ def _evaluation_mode(raw: Any) -> str:
     value = aliases.get(value, value)
     if value not in _EVALUATION_MODES:
         raise ValueError(
-            "evaluation_mode must be 'visualisation', 'metric', or "
+            "evaluation_mode must be 'prediction', 'visualisation', 'metric', or "
             f"'paper_metric', got {raw!r}."
         )
     return value
@@ -656,9 +656,11 @@ def resolve_evaluation_options(
             "combined in one child run."
         )
     compute_paper_metrics = bool(
-        mode == "paper_metric"
-        or record_robustness_paper_metrics
-        or record_translation_paper_metrics
+        mode != "prediction" and (
+            mode == "paper_metric"
+            or record_robustness_paper_metrics
+            or record_translation_paper_metrics
+        )
     )
     paper_metric_save_masks = config.get("paper_metric_save_masks", True)
     if not isinstance(paper_metric_save_masks, bool):
@@ -2249,14 +2251,22 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             dataset_split = options.case_splits[case_id]
             print(
                 f"[{index + 1}/{len(dataset)}] Reconstructing case {case_id} "
-                f"({dataset_split})"
+                f"({dataset_split})", flush=True,
             )
+            forward_started = time.perf_counter()
             dense, elapsed_ms = _forward_dense(
                 model,
                 sample,
                 device=device,
                 use_mixed_precision=use_mixed_precision,
             )
+            forward_total_s = time.perf_counter() - forward_started
+            print(
+                f"  case {case_id}: model={elapsed_ms / 1000:.2f}s; "
+                f"model + dense export={forward_total_s:.2f}s; saving NPZ",
+                flush=True,
+            )
+            save_started = time.perf_counter()
             prediction_path = (
                 output_dir / "predictions" / "final" / dataset_split / f"{case_id}.npz"
             )
@@ -2269,7 +2279,12 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 protocol=protocol,
                 output_dtype=options.output_dtype,
             )
-            metrics = evaluate_case(
+            save_s = time.perf_counter() - save_started
+            print(f"  case {case_id}: NPZ saved in {save_s:.2f}s", flush=True)
+            metric_started = time.perf_counter()
+            if options.evaluation_mode != "prediction":
+                print(f"  case {case_id}: computing native-volume metrics", flush=True)
+            metrics = {} if options.evaluation_mode == "prediction" else evaluate_case(
                 dense,
                 Path(sample["voxel_path"]),
                 Path(sample["projection_path"]),
@@ -2296,6 +2311,11 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
             }
             paper_record: dict[str, Any] | None = None
             if options.compute_paper_metrics:
+                print(
+                    f"  case {case_id}: native metrics finished in "
+                    f"{time.perf_counter() - metric_started:.2f}s; "
+                    "computing paper/centerline metrics", flush=True,
+                )
                 paper_result = _paper_metric_case(
                     dense,
                     sample,
@@ -2362,6 +2382,22 @@ def run_evaluation(options: EvaluationOptions) -> dict[str, Any]:
                 time.perf_counter() - processing_started
             ) * 1000.0
             report["processing_elapsed_ms"] = processing_elapsed_ms
+            _write_json(output_dir / "progress" / f"{case_id}.json", {
+                "case_id": case_id,
+                "model_seconds": elapsed_ms / 1000,
+                "model_and_dense_export_seconds": forward_total_s,
+                "npz_save_seconds": save_s,
+                "metrics_seconds": (
+                    0.0 if options.evaluation_mode == "prediction"
+                    else time.perf_counter() - metric_started
+                ),
+                "processing_seconds": processing_elapsed_ms / 1000,
+                "prediction": str(prediction_path),
+            })
+            print(
+                f"  case {case_id}: completed in {processing_elapsed_ms / 1000:.2f}s",
+                flush=True,
+            )
             if paper_record is not None:
                 paper_record.update(
                     {
