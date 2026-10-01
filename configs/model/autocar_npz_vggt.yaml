@@ -1,0 +1,13 @@
+defaults:
+  - autocar_npz_variable_views
+  - _self_
+
+recon_net:
+  encoder2d:
+    type: vggt
+    input: mask
+    working_image_dim: 518
+    pretrained_path: null
+    pretrained_repo: facebook/VGGT-1B
+    backbone_precision: bf16
+    adapter_channels: 64

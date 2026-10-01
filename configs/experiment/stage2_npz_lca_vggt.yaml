@@ -1,0 +1,39 @@
+# @package _global_
+
+defaults:
+  - override /data: stage2_npz_lca
+  - override /model: autocar_npz_vggt
+
+task_name: train_autocar_lca_vggt
+tags: ["autocar", "stage2_npz", "lca", "voxel_supervision", "variable_views", "frozen_vggt"]
+seed: 42
+test: true
+
+data:
+  min_train_views: 1
+  max_train_views: 7
+
+model:
+  recon_net:
+    ray_casting:
+      # Case 150, view 5 produces 4.32M voxels at 0.5 mm and exceeds the
+      # FP32 decoder's int32 indexing limit. Use one consistent grid for all
+      # LCA training/validation view counts; checkpoints save this geometry.
+      LODs: [1.0]
+
+trainer:
+  min_epochs: 1
+  max_epochs: 200
+  check_val_every_n_epoch: 1
+  accumulate_grad_batches: 4
+  gradient_clip_val: 0.5
+  # spconv 2.3.8's FP16 implicit-GEMM tuner fails on the RTX 6000 Ada.
+  precision: 32-true
+
+callbacks:
+  model_checkpoint:
+    monitor: val/masked_dice_3d
+    mode: max
+  early_stopping:
+    monitor: val/masked_dice_3d
+    mode: max

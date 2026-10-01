@@ -90,6 +90,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--evaluation-view-indices", type=int, nargs=2, metavar=("FIRST", "SECOND")
     )
+    parser.add_argument("--encoder", choices=("hourglass", "vggt"), default="hourglass")
     parser.add_argument("--max-epochs", type=int, default=200)
     parser.add_argument("--min-input-views", type=int, default=2)
     parser.add_argument("--max-input-views", type=int, default=2)
@@ -230,7 +231,9 @@ def _hydra_command(
 ) -> list[str]:
     variable_views = (args.min_input_views, args.max_input_views) != (2, 2)
     experiment = str(settings["experiment"])
-    if variable_views:
+    if args.encoder == "vggt":
+        experiment += "_vggt"
+    elif variable_views:
         experiment += "_variable_views"
     command = [
         sys.executable,

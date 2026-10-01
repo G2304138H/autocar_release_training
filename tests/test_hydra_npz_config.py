@@ -146,3 +146,19 @@ def test_imagecas_artery_experiments_compose_cluster_paths(
         assert config.data.fallback_sid_mm == pytest.approx(900.0)
         assert config.data.evaluation_view_labels is None
     assert config.data.source_to_isocenter_mm == pytest.approx(750.0)
+
+
+@pytest.mark.parametrize("artery,voxel_size", [("lca", 1.0), ("rca", 0.5)])
+def test_frozen_vggt_experiment_composes(artery, voxel_size):
+    config_directory = Path(__file__).parents[1] / "configs"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_directory.resolve())):
+        config = compose(config_name="train.yaml", overrides=[f"experiment=stage2_npz_{artery}_vggt"])
+    net = config.model.recon_net
+    assert net.encoder2d.type == "vggt"
+    assert net.encoder2d.working_image_dim % 14 == 0
+    assert net.encoder2d.out_ch == 12
+    assert net.unet3d.in_channels == 13
+    assert list(net.ray_casting.LODs) == [voxel_size]
+    assert (config.data.min_train_views, config.data.max_train_views) == (1, 7)
+    assert config.task_name == f"train_autocar_{artery}_vggt"
+    assert config.trainer.precision == "32-true"

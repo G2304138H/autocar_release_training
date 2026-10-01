@@ -72,3 +72,14 @@ def test_launcher_selects_variable_view_model_and_training_range():
     assert "experiment=stage2_npz_lca_variable_views" in command
     assert "data.min_train_views=1" in command
     assert "data.max_train_views=7" in command
+
+
+def test_vggt_launcher_selects_frozen_experiment_and_view_range():
+    args = launcher._parser().parse_args([
+        "--artery", "lca", "--encoder", "vggt",
+        "--min-input-views", "1", "--max-input-views", "7",
+    ])
+    command = launcher._hydra_command(args, launcher._resolved_settings(args))
+    assert "experiment=stage2_npz_lca_vggt" in command
+    assert "data.min_train_views=1" in command
+    assert "data.max_train_views=7" in command

@@ -43,6 +43,11 @@ class AutoCAR(torch.nn.Module):
             raise ValueError(
                 "encoder2d.input must be 'mask' or 'legacy_exp_distance'."
             )
+        encoder_type = str(cfg.encoder2d.get("type", "hourglass"))
+        if encoder_type not in {"hourglass", "vggt"}:
+            raise ValueError(f"Unknown encoder2d.type: {encoder_type}")
+        if encoder_type == "vggt" and self.encoder_input != "mask":
+            raise ValueError("VGGT requires encoder2d.input=mask.")
         working_image_dim = cfg.encoder2d.get("working_image_dim")
         if working_image_dim is None:
             self.encoder_working_image_dim = None
@@ -52,14 +57,24 @@ class AutoCAR(torch.nn.Module):
             self.encoder_working_image_dim = int(working_image_dim)
             if (
                 self.encoder_working_image_dim != working_image_dim
-                or self.encoder_working_image_dim < 256
-                or self.encoder_working_image_dim % 256 != 0
+                or self.encoder_working_image_dim < (14 if encoder_type == "vggt" else 256)
+                or self.encoder_working_image_dim % (14 if encoder_type == "vggt" else 256) != 0
             ):
                 raise ValueError(
                     "encoder2d.working_image_dim must be a positive multiple "
-                    "of 256 so the four-level hourglass has aligned shapes."
+                    "of 14 for VGGT, or 256 for hourglass."
                 )
-        self.encoder2d = StackedHourGlassEncoder(encoder_channels)
+        if encoder_type == "vggt":
+            from src.modules.vggt_encoder import FrozenVGGTEncoder
+            self.encoder2d = FrozenVGGTEncoder(
+                out_ch=encoder_channels,
+                pretrained_path=cfg.encoder2d.get("pretrained_path"),
+                pretrained_repo=cfg.encoder2d.get("pretrained_repo", "facebook/VGGT-1B"),
+                backbone_precision=cfg.encoder2d.get("backbone_precision", "bf16"),
+                adapter_channels=int(cfg.encoder2d.get("adapter_channels", 64)),
+            )
+        else:
+            self.encoder2d = StackedHourGlassEncoder(encoder_channels)
         self.ray_casting = SparseBackwardProjection(
             cfg.ray_casting.bbox_min,
             cfg.ray_casting.bbox_max,

@@ -1245,3 +1245,78 @@ messages cover NPZ saving and metrics. Module return messages do not synchronize
 CUDA; the overall model completion message does. The last stage-start message
 helps locate slow work but is not proof of a hang. These messages require restarting
 with the updated code; they cannot appear in an already-running old process.
+
+### Frozen VGGT training (experimental)
+
+Install the optional encoder into the existing CUDA AutoCAR environment:
+
+```bash
+python -m pip install -r requirements/vggt.txt
+```
+
+Train RCA with random 1–7 views per training case per epoch:
+
+```bash
+python scripts/train_imagecas_npz.py \
+  --artery rca --encoder vggt \
+  --min-input-views 1 --max-input-views 7 \
+  --max-epochs 200
+```
+
+For LCA, replace `--artery rca` with `--artery lca`. LCA retains its 1.0 mm
+reconstruction grid; RCA retains 0.5 mm. Standard launcher path overrides work.
+The default experiment names are `train_autocar_rca_vggt` and
+`train_autocar_lca_vggt`; use `--log-dir /absolute/path` to override the logging root.
+The resolved Hydra run configuration and checkpoints record encoder settings.
+
+On the first forward pass, the encoder fetches `model.pt` from
+`facebook/VGGT-1B` through the Hugging Face cache. For an offline compute node,
+provide a previously downloaded official VGGT checkpoint:
+
+```bash
+python scripts/train_imagecas_npz.py \
+  --artery rca --encoder vggt \
+  --min-input-views 1 --max-input-views 7 \
+  -- model.recon_net.encoder2d.pretrained_path=/absolute/path/model.pt
+```
+
+The encoder repeats masks into three channels, resizes to 518×518, and uses
+VGGT's own normalization. The frozen aggregator runs in eval mode without
+backpropagation; CUDA BF16 applies only inside this backbone. The trainable
+adapter takes the final 2048-channel patch tokens, applies small convolutions,
+and bilinearly upsamples 12 output channels. This is a compact dense adapter,
+not VGGT's pretrained depth/DPT head. Features return to the native detector
+resolution before back projection; camera matrices and masks remain native.
+The adapter and sparse 3D U-Net train in the existing FP32 configuration.
+On GPUs without BF16 support, override
+`model.recon_net.encoder2d.backbone_precision=fp32` (higher memory demand).
+
+All frozen parameters are excluded from the optimizer. Full backbone weights
+and an initialization flag are saved in each AutoCAR checkpoint; resuming or
+evaluating such a checkpoint requires the VGGT package, but no original
+pretraining file or network download. Checkpoints are substantially larger.
+Start a new experiment; an hourglass checkpoint is not a VGGT resume checkpoint.
+Use the existing variable-view evaluation launcher for first-1/2/4 evaluation.
+
+VGGT adds computation and does not reduce the number of projected voxels or fix
+spconv indexing limits. Memory usage and transfer quality on vessel masks need
+validation on the training GPU, especially with seven views. Batch size remains
+one; gradient accumulation preserves the existing effective batch size.
+
+Before a full run, validate the adapter contracts in an environment with PyTorch:
+
+```bash
+python -m unittest discover -s tests -p test_vggt_encoder.py
+python -m pytest tests/test_hydra_npz_config.py tests/test_train_imagecas_launcher.py
+```
+
+A short end-to-end seven-view GPU smoke run can use a separate logging root:
+
+```bash
+python scripts/train_imagecas_npz.py \
+  --artery rca --encoder vggt \
+  --min-input-views 7 --max-input-views 7 --max-epochs 1 \
+  --log-dir ./logs/vggt_smoke \
+  -- trainer.limit_train_batches=1 trainer.limit_val_batches=1 \
+  trainer.num_sanity_val_steps=0 test=false
+```

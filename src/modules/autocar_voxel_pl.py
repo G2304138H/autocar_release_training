@@ -609,7 +609,7 @@ class AutoCARVoxelLit(LightningModule):
             self._raise_step_failure("test", batch, batch_idx, error)
 
     def configure_optimizers(self) -> Dict[str, Any]:
-        optimizer = self.hparams.optimizer(params=self.parameters())
+        optimizer = self.hparams.optimizer(params=(p for p in self.parameters() if p.requires_grad))
         if self.hparams.scheduler is None:
             return {"optimizer": optimizer}
         scheduler = self.hparams.scheduler(optimizer=optimizer)
