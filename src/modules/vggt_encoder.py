@@ -7,6 +7,13 @@ from torch import nn
 from torch.nn import functional as F
 
 
+def _omit_frozen_backbone(module, state_dict, prefix, local_metadata):
+    """Applied even when this encoder is nested in a Lightning checkpoint."""
+    for key in list(state_dict):
+        if key.startswith(prefix + "backbone.") or key == prefix + "pretrained_loaded":
+            del state_dict[key]
+
+
 class FrozenVGGTEncoder(nn.Module):
     def __init__(self, out_ch=12, pretrained_path=None, pretrained_repo="facebook/VGGT-1B",
                  backbone_precision="bf16", adapter_channels=64):
@@ -23,13 +30,30 @@ class FrozenVGGTEncoder(nn.Module):
         self.pretrained_path = pretrained_path
         self.pretrained_repo = pretrained_repo
         self.backbone_precision = backbone_precision
-        # Persist readiness alongside the full backbone state. Restored AutoCAR
-        # checkpoints are self-contained and never need the original weight file.
+        # Runtime readiness; excluded from saved state with the frozen weights.
         self.register_buffer("pretrained_loaded", torch.tensor(False))
+        self.register_state_dict_post_hook(_omit_frozen_backbone)
         self.adapter = nn.Sequential(
             nn.Conv2d(2048, adapter_channels, 1), nn.GELU(),
             nn.Conv2d(adapter_channels, adapter_channels, 3, padding=1), nn.GELU(),
             nn.Conv2d(adapter_channels, out_ch, 1),
+        )
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        backbone_prefix = prefix + "backbone."
+        if not any(key.startswith(backbone_prefix) for key in state_dict):
+            # Restore external weights before strict recursive loading. Only the
+            # deliberately omitted backbone is supplied; adapter errors still fail.
+            self.pretrained_loaded.fill_(False)
+            self._ensure_pretrained()
+            for key, value in self.backbone.state_dict().items():
+                state_dict[backbone_prefix + key] = value
+            state_dict[prefix + "pretrained_loaded"] = self.pretrained_loaded.clone()
+        # Legacy full checkpoints retain their normal strict-loading behavior.
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs,
         )
 
     def train(self, mode=True):

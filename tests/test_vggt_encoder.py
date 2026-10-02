@@ -34,7 +34,7 @@ class FrozenVGGTTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
-    def test_views_gradients_freezing_and_portable_checkpoint(self):
+    def test_views_gradients_freezing_and_external_checkpoint(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model.pt"
             torch.save({"aggregator.scale": torch.tensor(3.0)}, path)
@@ -49,11 +49,44 @@ class FrozenVGGTTests(unittest.TestCase):
                 self.assertIsNone(encoder.backbone.scale.grad)
                 self.assertTrue(all(p.grad is not None for p in encoder.adapter.parameters()))
             self.assertEqual(encoder.backbone.scale.item(), 3.0)
-            restored = FrozenVGGTEncoder(pretrained_path="/missing/model.pt", adapter_channels=4)
-            restored.load_state_dict(encoder.state_dict())
-            path.unlink()
+            saved = encoder.state_dict()
+            self.assertFalse(any(key.startswith("backbone.") for key in saved))
+            self.assertNotIn("pretrained_loaded", saved)
+            restored = FrozenVGGTEncoder(pretrained_path=str(path), adapter_channels=4)
+            restored.load_state_dict(saved, strict=True)
             masks = torch.rand(1, 2, 28, 42)
             torch.testing.assert_close(restored(masks), encoder(masks))
+
+    def test_nested_restore_and_strict_adapter_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            torch.save({"aggregator.scale": torch.tensor(3.0)}, path)
+            original = nn.Sequential(FrozenVGGTEncoder(pretrained_path=str(path), adapter_channels=4))
+            masks = torch.rand(1, 1, 28, 28)
+            expected = original(masks)
+            saved = original.state_dict()
+            self.assertFalse(any("backbone." in key for key in saved))
+            restored = nn.Sequential(FrozenVGGTEncoder(pretrained_path=str(path), adapter_channels=4))
+            restored.load_state_dict(saved)
+            torch.testing.assert_close(expected, restored(masks))
+            del saved["0.adapter.0.weight"]
+            with self.assertRaisesRegex(RuntimeError, "adapter.0.weight"):
+                restored.load_state_dict(saved)
+
+    def test_legacy_full_checkpoint_loads_without_external_file(self):
+        encoder = FrozenVGGTEncoder(pretrained_path="/missing/model.pt", adapter_channels=4)
+        saved = encoder.state_dict()
+        saved["backbone.scale"] = torch.tensor(3.0)
+        saved["pretrained_loaded"] = torch.tensor(True)
+        encoder.load_state_dict(saved)
+        self.assertEqual(encoder.backbone.scale.item(), 3.0)
+        encoder(torch.rand(1, 1, 28, 28))
+        self.assertNotIn("backbone.scale", encoder.state_dict())
+
+    def test_compact_checkpoint_requires_external_weights(self):
+        encoder = FrozenVGGTEncoder(pretrained_path="/missing/model.pt")
+        with self.assertRaises(FileNotFoundError):
+            encoder.load_state_dict(encoder.state_dict())
 
     def test_rejects_incomplete_pretraining(self):
         with tempfile.TemporaryDirectory() as directory:

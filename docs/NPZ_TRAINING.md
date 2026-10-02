@@ -1291,10 +1291,12 @@ The adapter and sparse 3D U-Net train in the existing FP32 configuration.
 On GPUs without BF16 support, override
 `model.recon_net.encoder2d.backbone_precision=fp32` (higher memory demand).
 
-All frozen parameters are excluded from the optimizer. Full backbone weights
-and an initialization flag are saved in each AutoCAR checkpoint; resuming or
-evaluating such a checkpoint requires the VGGT package, but no original
-pretraining file or network download. Checkpoints are substantially larger.
+All frozen parameters are excluded from the optimizer. Frozen VGGT weights and their initialization flag are excluded from AutoCAR
+checkpoints. Resuming or evaluating reloads VGGT from the configured
+`pretrained_path` or Hugging Face cache/download. Keep that pretrained file
+available on offline nodes. Trainable adapter/U-Net weights and optimizer/training
+state remain in the checkpoint. Legacy checkpoints containing VGGT weights still
+load; subsequent saves omit the backbone.
 Start a new experiment; an hourglass checkpoint is not a VGGT resume checkpoint.
 Use the existing variable-view evaluation launcher for first-1/2/4 evaluation.
 
