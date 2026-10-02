@@ -32,7 +32,11 @@ class FrozenVGGTEncoder(nn.Module):
         self.backbone_precision = backbone_precision
         # Runtime readiness; excluded from saved state with the frozen weights.
         self.register_buffer("pretrained_loaded", torch.tensor(False))
-        self.register_state_dict_post_hook(_omit_frozen_backbone)
+        register_hook = getattr(self, "register_state_dict_post_hook", None)
+        if register_hook is None:
+            # Older PyTorch exposes the equivalent post-save hook privately.
+            register_hook = self._register_state_dict_hook
+        register_hook(_omit_frozen_backbone)
         self.adapter = nn.Sequential(
             nn.Conv2d(2048, adapter_channels, 1), nn.GELU(),
             nn.Conv2d(adapter_channels, adapter_channels, 3, padding=1), nn.GELU(),

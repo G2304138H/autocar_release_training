@@ -88,6 +88,16 @@ class FrozenVGGTTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             encoder.load_state_dict(encoder.state_dict())
 
+    def test_older_torch_hook_api_omits_backbone_in_nested_checkpoint(self):
+        # Simulate a PyTorch release without the public post-hook API.
+        with patch.object(nn.Module, "register_state_dict_post_hook", None, create=True):
+            encoder = FrozenVGGTEncoder(adapter_channels=4)
+            model = nn.Sequential(encoder)
+            saved = model.state_dict()
+        self.assertTrue(any(key.startswith("0.adapter.") for key in saved))
+        self.assertFalse(any("backbone." in key for key in saved))
+        self.assertNotIn("0.pretrained_loaded", saved)
+
     def test_rejects_incomplete_pretraining(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model.pt"
