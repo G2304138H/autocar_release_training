@@ -1,0 +1,35 @@
+{
+  "artery_type": "lca",
+  "checkpoint": null,
+  "input_dir": null,
+  "output_dir": null,
+  "device": "auto",
+  "camera": "acquisition",
+  "acquisition_geometry": {
+    "allura": {
+      "sid_mm": 1137.0,
+      "sod_mm": 765.0
+    },
+    "azurion": {
+      "sid_mm": 1195.0,
+      "sod_mm": 810.0
+    },
+    "default": {
+      "sid_mm": 1137.0,
+      "sod_mm": 765.0
+    }
+  },
+  "imager_pixel_spacing_mm": null,
+  "output_mode": "full",
+  "num_views": 2,
+  "view_selection": "max_separation",
+  "input_views": "auto",
+  "input_centering": "mask_centroid",
+  "centering_views": "all",
+  "align_reprojection": true,
+  "display_voxel_mm": 1.0,
+  "save_gifs": true,
+  "gif_frames": 60,
+  "gif_fps": 12,
+  "overwrite": false
+}
