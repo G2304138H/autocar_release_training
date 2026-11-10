@@ -122,7 +122,7 @@ def _case_id_from_projection(path: Path, case_id_mode: str) -> str:
             raw_case_id = (
                 _scalar(data, "case_id", path)
                 if "case_id" in data
-                else path.stem
+                else (str(path) if case_id_mode == "imagecas_numeric" else path.stem)
             )
             case_id = _validated_case_id(
                 raw_case_id, path, case_id_mode
@@ -203,8 +203,10 @@ class Stage2NPZDataset:
     Args:
         projection_source: Projection NPZ file, directory, or sequence thereof.
             A projection file's scalar ``case_id`` is used when present;
-            otherwise its stem is the case ID (for example,
-            ``rca_0001.npz`` is ImageCAS numeric case ``"1"``).
+            otherwise its filename is used. In ``imagecas_numeric`` mode,
+            a numeric parent directory is also supported (for example,
+            both ``rca_0001.npz`` and ``rca/1/vessel_code_step6.npz``
+            identify case ``"1"``). Literal mode continues to use the stem.
         voxel_source: Voxel NPZ file, directory, or sequence thereof.  A voxel
             file's scalar ``case_id`` is used when present; otherwise its stem
             is the case ID (for example, ``1.npz`` is case ``"1"``).
@@ -678,7 +680,7 @@ class Stage2NPZDataset:
                 raw_case_id = (
                     _scalar(data, "case_id", path)
                     if "case_id" in data
-                    else path.stem
+                    else (str(path) if self.case_id_mode == "imagecas_numeric" else path.stem)
                 )
                 case_id = _validated_case_id(
                     raw_case_id, path, self.case_id_mode

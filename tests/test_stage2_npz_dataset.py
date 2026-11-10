@@ -311,6 +311,34 @@ class Stage2NPZDatasetTests(unittest.TestCase):
             self.assertEqual(dataset.records[0].case_id, "1")
             self.assertEqual(dataset[0]["case_id"], "1")
 
+    def test_imagecas_nested_projection_uses_numeric_parent_without_case_id(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection = root / "rca" / "1" / "vessel_code_step6.npz"
+            projection.parent.mkdir(parents=True)
+            voxel = root / "1.npz"
+            _write_projection(projection, case_id="unused")
+            _drop_projection_fields(projection, "case_id")
+            _write_voxel(voxel)
+            dataset = Stage2NPZDataset(
+                root / "rca", voxel, case_ids=["1"],
+                case_id_mode="imagecas_numeric", view_mode="fixed",
+                fixed_view_indices=[0, 1],
+            )
+            self.assertEqual(dataset.records[0].case_id, "1")
+            self.assertEqual(dataset[0]["case_id"], "1")
+
+    def test_nested_projection_invalid_explicit_id_is_not_hidden_by_parent(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            projection = root / "rca" / "1" / "vessel_code_step6.npz"
+            projection.parent.mkdir(parents=True)
+            voxel = root / "1.npz"
+            _write_projection(projection, case_id="invalid")
+            _write_voxel(voxel)
+            with self.assertRaisesRegex(Stage2NPZError, "Invalid case_id"):
+                Stage2NPZDataset(projection, voxel, case_id_mode="imagecas_numeric")
+
     def test_path_like_case_id_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
