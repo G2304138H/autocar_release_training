@@ -27,7 +27,8 @@ def test_default_plan_matches_parametric_24_condition_protocol():
     assert plan["save_mask_npz_files"] is False
 
 
-def test_single_condition_run_compares_to_accurate_baseline(monkeypatch, tmp_path):
+@pytest.mark.parametrize("scalar", [False, True])
+def test_single_condition_run_compares_to_accurate_baseline(monkeypatch, tmp_path, scalar):
     checkpoint = tmp_path / "run" / "checkpoints" / "epoch_1.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.touch()
@@ -84,6 +85,9 @@ def test_single_condition_run_compares_to_accurate_baseline(monkeypatch, tmp_pat
         },
     }
 
+    if scalar:
+        eval_config["view_direction_robustness"] = {"error_degrees": [.2, .5, 1., 2.]}
+
     def fake_run(command, cwd, check):
         child = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
         child_output = Path(child["eval_output_dir"])
@@ -95,8 +99,8 @@ def test_single_condition_run_compares_to_accurate_baseline(monkeypatch, tmp_pat
             "comparison_condition": {
                 **baseline["comparison_condition"],
                 "view_directions_accurate": False,
-                "theta_change_deg": 5.0,
-                "phi_change_deg": 0.0,
+                "theta_change_deg": child["evaluation_view_directions"]["theta_change_deg"],
+                "phi_change_deg": child["evaluation_view_directions"]["phi_change_deg"],
             },
             "roles": {
                 "final": {
@@ -136,7 +140,10 @@ def test_single_condition_run_compares_to_accurate_baseline(monkeypatch, tmp_pat
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     comparison = summary["results"][0]["comparison_to_accurate"]["final"]
     assert summary["status"] == "complete"
-    assert summary["num_conditions"] == 1
+    assert summary["num_conditions"] == (4 if scalar else 1)
+    if scalar:
+        assert summary["results"][0]["condition_id"] == "error_0p2deg"
+        assert summary["quadratic_response_surfaces"] is None
     assert comparison["paper_mask_dice_3d"]["signed_change"] == pytest.approx(-0.1)
     assert comparison["paper_mask_cldice_3d"]["signed_change"] == pytest.approx(
         -0.15
@@ -196,3 +203,11 @@ def test_quadratic_surface_recovers_known_coefficients():
     assert fitted["r_squared"] == pytest.approx(1.0)
     assert fitted["coefficients"]["theta_linear"] == pytest.approx(2.0)
     assert fitted["coefficients"]["phi_squared"] == pytest.approx(0.75)
+
+
+def test_scalar_four_conditions():
+    plan = resolve_view_direction_robustness_plan({'view_direction_robustness': {'error_degrees': [.2, .5, 1., 2.]}})
+    assert plan['conditions'] == [(0., .2), (0., .5), (0., 1.), (0., 2.)]
+    assert plan['visualization_conditions'] == []
+    with pytest.raises(ValueError):
+        resolve_view_direction_robustness_plan({'view_direction_robustness': {'error_degrees': [1], 'axis_degrees': [1]}})

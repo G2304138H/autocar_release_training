@@ -71,6 +71,8 @@ def _parser() -> argparse.ArgumentParser:
                 "performance_summary.json."
             ),
         )
+    parser.add_argument("--error-degrees", type=float, nargs="+", default=None,
+                        help="Scalar tilt sweep, e.g. 0.2 0.5 1 2 (no theta/phi grid).")
     parser.add_argument(
         "--axis-degrees",
         type=float,
@@ -200,11 +202,13 @@ def _config_for_artery(
         "ground_truth_origin_xyz_mm": None,
         "overwrite": args.overwrite,
         "view_direction_robustness": {
-            "axis_degrees": list(args.axis_degrees),
-            "combined_degrees": list(args.combined_degrees),
+            **({"error_degrees": list(args.error_degrees)} if args.error_degrees is not None else {
+                "axis_degrees": list(args.axis_degrees),
+                "combined_degrees": list(args.combined_degrees),
+            }),
             "visualization_conditions_deg": (
                 []
-                if args.no_visualizations
+                if args.no_visualizations or args.error_degrees is not None
                 else [
                     list(pair)
                     for pair in DEFAULT_VISUALIZATION_CONDITIONS

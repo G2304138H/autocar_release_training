@@ -215,3 +215,29 @@ python src/train.py experiment=exp_right
 ## Licence
 
 [![License: CC BY-NC-ND 4.0](https://img.shields.io/badge/License-CC_BY--NC--ND_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-nd/4.0/)
+
+## Scalar view-direction error evaluation
+
+The NPZ evaluator accepts the following fields in the existing evaluation JSON:
+
+```json
+"evaluation_mode": "inaccurate_view_direction",
+"view_direction_robustness": {
+  "error_degrees": [0.2, 0.5, 1.0, 2.0]
+}
+```
+
+Run `python -m src.eval_npz --config configs/eval_npz_inaccurate_view_direction_template.json`
+after configuring your checkpoint/data/output paths. The convenience launcher
+also accepts `--error-degrees 0.2 0.5 1 2`:
+`python scripts/evaluate_imagecas_npz_inaccurate_view_direction.py --artery rca --error-degrees 0.2 0.5 1 2`.
+
+Exactly four fixed meridian-tilt conditions run, matching the vessel-tree
+protocol. Values are actual angle offsets, not random bounds or standard
+deviations. Do not combine `error_degrees` with legacy axis/combined/changes
+options. Masks stay fixed; model-facing projection matrices use perturbed
+angles. Existing prediction NPZ export is retained in separate
+`conditions/error_0p2deg/` etc. trees, compatible with the normal downstream
+prediction evaluator. The accurate paper-metric baseline is still required
+by default; run it separately or configure its summary path. The updated
+JSON template saves predictions and uses the four scalar levels.

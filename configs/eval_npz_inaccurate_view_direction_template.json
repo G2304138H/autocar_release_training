@@ -36,18 +36,8 @@
   "overwrite": false,
 
   "view_direction_robustness": {
-    "axis_degrees": [2.0, 5.0, 10.0, 15.0],
-    "combined_degrees": [5.0, 10.0],
-    "visualization_conditions_deg": [
-      [-10.0, 0.0],
-      [10.0, 0.0],
-      [0.0, -10.0],
-      [0.0, 10.0],
-      [-10.0, -10.0],
-      [-10.0, 10.0],
-      [10.0, -10.0],
-      [10.0, 10.0]
-    ],
+    "error_degrees": [0.2, 0.5, 1.0, 2.0],
+    "visualization_conditions_deg": [],
     "accurate_baseline_summary": "auto",
     "require_accurate_baseline": true,
     "record_paper_metrics": true,

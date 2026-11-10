@@ -88,7 +88,16 @@ def resolve_view_direction_robustness_plan(
         raw = {}
     if not isinstance(raw, dict):
         raise ValueError("view_direction_robustness must be a JSON object.")
-    if raw.get("changes_deg") is not None:
+    scalar = raw.get("error_degrees")
+    if scalar is not None:
+        conflicts = {"changes_deg", "axis_degrees", "combined_degrees"}.intersection(raw)
+        if conflicts:
+            raise ValueError(f"error_degrees conflicts with {sorted(conflicts)}")
+        scalar = _positive_degrees(scalar, label="error_degrees")
+        if any(value > 180 for value in scalar):
+            raise ValueError("error_degrees must be <= 180")
+        conditions = [(0.0, error) for error in scalar]
+    elif raw.get("changes_deg") is not None:
         conditions = _angle_pairs(
             raw["changes_deg"], label="view_direction_robustness.changes_deg"
         )
@@ -158,6 +167,7 @@ def resolve_view_direction_robustness_plan(
             "record_paper_metrics=true."
         )
     return {
+        "error_degrees": scalar,
         "conditions": conditions,
         "visualization_conditions": visualizations,
         "accurate_baseline_summary": raw.get(
@@ -607,7 +617,8 @@ def run_view_direction_robustness(
             }
         ),
         "plan": {
-            "error_model": "fixed_signed_theta_phi_grid",
+            "error_model": "fixed_magnitude_meridian_tilt" if plan["error_degrees"] is not None else "fixed_signed_theta_phi_grid",
+            "error_degrees": plan["error_degrees"],
             "model_interface": "world2pix4x4_recomputed_from_perturbed_angles",
             "images_changed": False,
             "both_selected_views_perturbed": True,
@@ -626,7 +637,8 @@ def run_view_direction_robustness(
 
     expected_cases = baseline_cases
     for theta_change, phi_change in plan["conditions"]:
-        identifier = condition_id(theta_change, phi_change)
+        identifier = (f"error_{_format_number(phi_change)}deg" if plan["error_degrees"] is not None
+                      else condition_id(theta_change, phi_change))
         condition_output = conditions_dir / identifier
         condition_mode = (
             "visualisation"
@@ -737,7 +749,7 @@ def run_view_direction_robustness(
     aggregate["status"] = "complete"
     aggregate["num_conditions"] = len(aggregate["results"])
     aggregate["case_count"] = len(expected_cases or [])
-    aggregate["quadratic_response_surfaces"] = _response_surfaces(
+    aggregate["quadratic_response_surfaces"] = None if plan["error_degrees"] is not None else _response_surfaces(
         aggregate["results"], baseline_roles
     )
     _write_json(aggregate_path, aggregate)
