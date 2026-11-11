@@ -929,3 +929,46 @@ def test_voxel_ground_truth_masks_metrics_to_partial_valid_fov(tmp_path):
         assert np.count_nonzero(prediction_mask) == 6
         assert np.count_nonzero(prediction_mask & ~valid_fov) == 3
         assert np.count_nonzero(prediction_mask & valid_fov) == 3
+
+
+@pytest.mark.parametrize("raw_frame", ["native", "projection_centered"])
+def test_center_tolerance_preserves_physical_geometry_and_records_warning(tmp_path, raw_frame):
+    prediction_dir, raw_dir, output = tmp_path/'pred', tmp_path/'raw', tmp_path/'out'
+    pred_center = np.array([10., 20., 30.])
+    raw_center = pred_center + [.09, 0., 0.]
+    points = np.column_stack((np.arange(-1.75,1.5,.5),np.full(7,.25),np.full(7,.25)))
+    mask = np.zeros((8,8,8), dtype=np.float32)
+    mask[4,4,:7] = 1
+    _save_prediction(prediction_dir/'1.npz',mask,center_offset_xyz_mm=tuple(pred_center))
+    native = points + pred_center
+    _save_raw_vessel(raw_dir/'1'/'original.npz',
+        native if raw_frame=='native' else native-raw_center,
+        radius_mm=.24,coordinate_frame=raw_frame,center_offset_xyz_mm=tuple(raw_center))
+    with pytest.raises(ValueError,match='centre offsets disagree'):
+        _run_directory_evaluation(prediction_dir,raw_dir,output)
+    with pytest.warns(RuntimeWarning,match='accepted within 0.1 mm'):
+        _run_directory_evaluation(prediction_dir,raw_dir,output,'--center-offset-tolerance-mm','0.1')
+    record=json.loads((output/'per_case_metrics.json').read_text())[0]
+    assert record['dice_3d']==pytest.approx(1.)
+    np.testing.assert_allclose(record['projection_center_offset_xyz_mm'],pred_center)
+    audit=record['center_offset_consistency']
+    assert audit['comparisons'][0]['tolerated']
+    assert audit['comparisons'][0]['distance_mm']==pytest.approx(.09,abs=1e-5)
+
+
+def test_reported_case27_tolerance_and_larger_discrepancy(tmp_path):
+    from src.evaluate_prediction_directory import _center_offset_from_prediction_or_projection
+    path=tmp_path/'raw.npz'
+    predicted=np.array([54.052060425281525,97.62188273668289,66.63056689500809])
+    raw=np.array([54.01932820677757,97.54975140094757,66.66514277458191])
+    np.savez(path,projection_center_offset_xyz_mm=raw)
+    kwargs=dict(case_id='27',prediction_metadata={'projection_center_offset_xyz_mm':predicted},
+        raw_path=path,projection_paths=None,raw_frame='native',prediction_frame='projection_centered')
+    with pytest.warns(RuntimeWarning):
+        offset,_=_center_offset_from_prediction_or_projection(**kwargs,tolerance_mm=.1)
+    np.testing.assert_array_equal(offset,predicted)
+    with pytest.raises(ValueError,match='exceeds tolerance'):
+        _center_offset_from_prediction_or_projection(**kwargs,tolerance_mm=.05)
+    for invalid in (-1,float('nan'),float('inf')):
+        with pytest.raises(ValueError,match='finite and nonnegative'):
+            _center_offset_from_prediction_or_projection(**kwargs,tolerance_mm=invalid)

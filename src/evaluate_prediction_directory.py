@@ -22,6 +22,7 @@ import json
 import math
 import re
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -1354,7 +1355,11 @@ def _center_offset_from_prediction_or_projection(
     projection_paths: Mapping[str, Path] | None,
     raw_frame: str,
     prediction_frame: str,
+    tolerance_mm: float = 1e-4,
+    audit: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, str]:
+    if not math.isfinite(tolerance_mm) or tolerance_mm < 0:
+        raise ValueError("Centre-offset tolerance must be finite and nonnegative")
     embedded = prediction_metadata.get("projection_center_offset_xyz_mm")
     candidates: list[tuple[str, np.ndarray]] = []
     if embedded is not None:
@@ -1385,17 +1390,29 @@ def _center_offset_from_prediction_or_projection(
                 _load_center_offset_mm(projection_paths[case_id]),
             )
         )
+    for candidate_source, value in candidates:
+        if value.shape != (3,) or not np.isfinite(value).all():
+            raise ValueError(f"Case {case_id} has an invalid centre offset in {candidate_source}")
+    if audit is not None:
+        audit.update(tolerance_mm=tolerance_mm, comparisons=[],
+                     candidates={name: value.tolist() for name, value in candidates})
     if candidates:
         source, offset = candidates[0]
         for comparison_source, comparison_offset in candidates[1:]:
-            if not np.allclose(
-                offset, comparison_offset, rtol=0.0, atol=1e-4
-            ):
-                raise ValueError(
-                    f"Case {case_id} centre offsets disagree between "
-                    f"{source} ({offset.tolist()}) and {comparison_source} "
-                    f"({comparison_offset.tolist()})."
-                )
+            distance = float(np.linalg.norm(offset - comparison_offset))
+            exact = bool(np.allclose(offset, comparison_offset, rtol=0.0, atol=1e-4))
+            if audit is not None:
+                audit["comparisons"].append(dict(source=comparison_source,
+                    distance_mm=distance, tolerated=not exact and distance <= tolerance_mm))
+            if not exact:
+                message = (f"Case {case_id} centre offsets disagree between "
+                           f"{source} ({offset.tolist()}) and {comparison_source} "
+                           f"({comparison_offset.tolist()}); distance={distance:.6g} mm")
+                if distance > tolerance_mm:
+                    raise ValueError(message + f" exceeds tolerance {tolerance_mm:g} mm. "
+                                     "Use --center-offset-tolerance-mm only for verified small differences.")
+                warnings.warn(message + f"; accepted within {tolerance_mm:g} mm. "
+                              f"Keeping the {source} coordinate frame.", RuntimeWarning)
     elif raw_frame == prediction_frame:
         offset = np.zeros(3, dtype=np.float64)
         source = f"not_required_matching_{raw_frame}_frames"
@@ -1890,6 +1907,7 @@ def _evaluate_case(
     allow_clipped_raw_reference: bool,
     graph_path: Path,
     mask_path: Path | None,
+    center_offset_tolerance_mm: float = 1e-4,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     normalized = _load_normalized_prediction(
@@ -1964,6 +1982,7 @@ def _evaluate_case(
             f"Prediction case {case_id} was paired with raw vessel case "
             f"{raw.case_id}: {raw_path}"
         )
+    center_offset_audit: dict[str, Any] = {}
     center_offset, center_offset_source = _center_offset_from_prediction_or_projection(
         case_id=case_id,
         prediction_metadata=prediction_metadata,
@@ -1971,6 +1990,8 @@ def _evaluate_case(
         projection_paths=projection_paths,
         raw_frame=raw.coordinate_frame,
         prediction_frame=normalized.coordinate_frame,
+        tolerance_mm=center_offset_tolerance_mm,
+        audit=center_offset_audit,
     )
     if (
         ground_truth_path is not None
@@ -1983,8 +2004,14 @@ def _evaluate_case(
             "evaluation grid into that native volume. Embed the offset in "
             "the prediction/raw-vessel NPZ or pass --projection-dir."
         )
+    # Undo raw-file centering using its own offset before entering the prediction frame.
+    raw_for_transform = raw
+    raw_source_offset = center_offset_audit["candidates"].get("raw_vessel_npz")
+    if raw.coordinate_frame == "projection_centered" and raw_source_offset is not None:
+        raw_for_transform = _raw_vessel_in_frame(raw, target_frame="native",
+                                  center_offset_xyz_mm=np.asarray(raw_source_offset))
     raw_evaluation = _raw_vessel_in_frame(
-        raw,
+        raw_for_transform,
         target_frame=normalized.coordinate_frame,
         center_offset_xyz_mm=center_offset,
     )
@@ -2404,6 +2431,7 @@ def _evaluate_case(
         "view_indices_audit": view_indices_audit,
         "projection_center_offset_xyz_mm": center_offset.tolist(),
         "projection_center_offset_source": center_offset_source,
+        "center_offset_consistency": center_offset_audit,
         "raw_vessel_key": raw.vessel_key,
         "raw_vessel_scale_to_mm": raw.scale_to_mm,
         "raw_vessel_scale_source": raw.scale_source,
@@ -2587,6 +2615,9 @@ def _summary_rows(summary: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
+    tolerance = float(getattr(args, "center_offset_tolerance_mm", 1e-4))
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise ValueError("Centre-offset tolerance must be finite and nonnegative")
     prediction_paths = _discover_prediction_npzs(
         args.prediction_dir,
         requested_method=args.prediction_method,
@@ -2710,6 +2741,7 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     protocol = {
         "name": "saved_volume_to_raw_vessel_graph_evaluation",
+        "center_offset_tolerance_mm": tolerance,
         "artery": args.artery,
         "artery_pairing_audit": artery_audit,
         "prediction_method_requested": args.prediction_method,
@@ -2840,6 +2872,7 @@ def evaluate_prediction_directory(args: argparse.Namespace) -> dict[str, Any]:
             allow_clipped_raw_reference=args.allow_clipped_raw_reference,
             graph_path=graph_path,
             mask_path=mask_path,
+            center_offset_tolerance_mm=tolerance,
         )
         records.append(record)
         chamfer = record["centerline_chamfer_distance_mm"]
@@ -2990,6 +3023,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Required for legacy 3DGR-CAR NPZs that omit their alignment mode. "
             "Physical and same-grid files use different saved prediction grids."
         ),
+    )
+    parser.add_argument(
+        "--center-offset-tolerance-mm", type=float, default=1e-4,
+        help="Maximum accepted Euclidean centre-offset discrepancy in mm; warns and records accepted differences.",
     )
     parser.add_argument(
         "--case-id-override",
