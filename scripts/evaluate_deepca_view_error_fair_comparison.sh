@@ -29,7 +29,6 @@ for artery in rca lca; do
     echo "[STARTING] DeepCA $artery $condition, 2 views"
     "$PYTHON" scripts/evaluate_fair_comparison.py \
       --prediction-method deepca \
-      --protocol-version 1 \
       --artery "$artery" \
       --prediction-dir "$PRED_ROOT/$artery/evaluation_inacc_view/$condition/test/predictions/views_2" \
       --raw-vessel-dir "$raw" \
