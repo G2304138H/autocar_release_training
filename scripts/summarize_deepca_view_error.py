@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Combine overlap metrics with fair-comparison CD and radius MAE v2.
+"""Combine overlap metrics with fair-comparison CD and radius MAE.
 
 Branch metrics are averaged within each case, then across cases. SE uses
 sample SD / sqrt(number of valid cases); missing values are never zero-filled.
@@ -41,8 +41,6 @@ def branch_case_means(rows, metric, radius=False):
         if key in seen:
             raise ValueError(f'Duplicate case/branch row: {key}')
         seen.add(key)
-        if radius and row.get('radius_alignment') != 'arc_length':
-            raise ValueError('Expected arc-length radius metrics; will not substitute spatial radius MAE')
         value = row.get(metric)
         if value is not None and math.isfinite(float(value)):
             grouped[key[0]].append(float(value))
@@ -68,15 +66,15 @@ def collect(root):
             if any(row.get('ground_truth_volume_file') is not None for row in volume):
                 raise ValueError('Expected raw-vessel tube reference, found voxel GT')
             cd = branch_case_means(read(fair / 'branches.json'), 'chamfer_mm')
-            radius = branch_case_means(read(fair / 'radius_arc_length.json'), 'mae_mm', radius=True)
+            radius = branch_case_means(read(fair / 'radius.json'), 'mae_mm', radius=True)
             if not (set(cd) | set(radius)) <= ids:
                 raise ValueError('Branch metrics contain unexpected cases')
-            metrics = {'dice_percent': [], 'cldice_percent': [], 'cd_mm': [], 'radius_mae_v2_mm': []}
+            metrics = {'dice_percent': [], 'cldice_percent': [], 'cd_mm': [], 'radius_mae_mm': []}
             for row in volume:
                 case = case_id(row)
                 values = {'dice_percent': None if row['dice_3d'] is None else 100 * row['dice_3d'],
                           'cldice_percent': None if row['cldice_3d'] is None else 100 * row['cldice_3d'],
-                          'cd_mm': cd.get(case), 'radius_mae_v2_mm': radius.get(case)}
+                          'cd_mm': cd.get(case), 'radius_mae_mm': radius.get(case)}
                 case_output.append({'artery': artery.upper(), 'offset_deg': degrees, 'case_id': case, **values})
                 for metric, value in values.items():
                     metrics[metric].append(value)
@@ -101,17 +99,17 @@ def main():
     rows, cases = collect(args.output_root)
     write_csv(args.output_root / 'deepca_view_error_table.csv', rows)
     write_csv(args.output_root / 'deepca_view_error_per_case.csv', cases)
-    lines = ['| Artery | Offset | Dice (%), mean ± SE | clDice (%), mean ± SE | CD (mm), mean ± SE | Radius MAE v2 (mm), mean ± SE |',
+    lines = ['| Artery | Offset | Dice (%), mean ± SE | clDice (%), mean ± SE | CD (mm), mean ± SE | Radius MAE (mm), mean ± SE |',
              '|---|---|---|---|---|---|']
     for row in rows:
         cells = [row['artery'], f"{row['offset_deg']:g}°"]
-        for metric, digits in [('dice_percent', 2), ('cldice_percent', 2), ('cd_mm', 2), ('radius_mae_v2_mm', 3)]:
+        for metric, digits in [('dice_percent', 2), ('cldice_percent', 2), ('cd_mm', 2), ('radius_mae_mm', 3)]:
             mean, se = row[metric + '_mean'], row[metric + '_se']
             cells.append('—' if mean is None else f'{mean:.{digits}f} ± ' + ('NA' if se is None else f'{se:.{digits}f}'))
         lines.append('| ' + ' | '.join(cells) + ' |')
     lines += ['', 'SE = sample SD / sqrt(valid cases). Branch metrics are averaged within each case first.',
               'Dice/clDice: raw-vessel tubes, 0.5 mm grid, bounds [-58.5, 58.5] mm on each axis.',
-              'CD: fair-comparison all-branch Chamfer. Radius: fair-comparison arc-length-aligned MAE v2, all branches, all radii.',
+              'CD: fair-comparison all-branch Chamfer. Radius: fair-comparison radius.json (mae_mm), all branches, all radii.',
               'Valid case counts per metric are included in the CSV. No-offset baseline is not evaluated.']
     text = '\n'.join(lines) + '\n'
     (args.output_root / 'deepca_view_error_table.md').write_text(text)

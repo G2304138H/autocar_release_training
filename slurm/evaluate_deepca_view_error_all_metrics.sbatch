@@ -9,7 +9,7 @@
 
 # DeepCA: RCA and LCA, two input views, first-input-only offsets 0.5/1/2/4 degrees.
 # Dice/clDice: raw-vessel tubes on the 0.5-mm grid.
-# CD/radius MAE v2: shared fair-comparison evaluator.
+# CD/radius MAE (radius.json): shared fair-comparison evaluator.
 # Requires both scripts/evaluate_deepca_view_error_all_metrics.sh and
 # scripts/summarize_deepca_view_error.py in the server repository.
 set -euo pipefail
