@@ -280,7 +280,7 @@ def resolve_evaluation_view_directions(
             "Inaccurate evaluation view directions require a non-zero fixed "
             "theta_change_deg or phi_change_deg."
         )
-    options["distribution"] = "fixed_per_view"
+    options["distribution"] = "fixed_first_input_view"
     options["model_interface"] = "world2pix4x4"
     return options
 
@@ -892,7 +892,7 @@ def evaluation_model_camera_sample(
 
     The projection images and source metadata are retained.  For an inaccurate
     condition, the model-facing camera geometry is regenerated after adding the
-    same fixed signed theta/phi changes to both selected views.
+    fixed signed theta/phi changes to only the first selected input view.
     """
 
     original_theta = np.asarray(_numpy(sample["theta_deg"]), dtype=np.float64)
@@ -907,8 +907,15 @@ def evaluation_model_camera_sample(
     phi_change = 0.0 if options["accurate"] else float(
         options["phi_change_deg"]
     )
-    evaluated_theta = _wrapped_degrees(original_theta + theta_change)
-    evaluated_phi = _wrapped_degrees(original_phi + phi_change)
+    theta_changes = np.zeros_like(original_theta)
+    phi_changes = np.zeros_like(original_phi)
+    theta_changes[:1] = theta_change
+    phi_changes[:1] = phi_change
+    evaluated_theta = original_theta.copy()
+    evaluated_phi = original_phi.copy()
+    if not options["accurate"]:
+        evaluated_theta[:1] = _wrapped_degrees(original_theta[:1] + theta_change)
+        evaluated_phi[:1] = _wrapped_degrees(original_phi[:1] + phi_change)
     result = dict(sample)
     result["original_world2pix4x4"] = sample["world2pix4x4"]
 
@@ -934,7 +941,9 @@ def evaluation_model_camera_sample(
             "view_directions_world": geometry.view_directions_world,
         }
         for key, value in replacements.items():
-            result[key] = _array_like(sample[key], value)
+            updated = np.array(_numpy(sample[key]), copy=True)
+            updated[:1] = value[:1]
+            result[key] = _array_like(sample[key], updated)
         if geometry.num_views == 2:
             cosine = float(
                 np.dot(
@@ -960,11 +969,11 @@ def evaluation_model_camera_sample(
     result["evaluated_phi_deg"] = _array_like(sample["phi_deg"], evaluated_phi)
     result["theta_change_deg"] = _array_like(
         sample["theta_deg"],
-        np.full(original_theta.shape, theta_change, dtype=np.float32),
+        theta_changes,
     )
     result["phi_change_deg"] = _array_like(
         sample["phi_deg"],
-        np.full(original_phi.shape, phi_change, dtype=np.float32),
+        phi_changes,
     )
     result["view_directions_accurate"] = bool(options["accurate"])
     result["evaluated_pair_angle_deg"] = evaluated_pair_angle
@@ -975,10 +984,10 @@ def evaluation_model_camera_sample(
             "model_view_position": int(position),
             "selected_view_index": int(selected_indices[position]),
             "original_theta_deg": float(original_theta[position]),
-            "theta_change_deg": theta_change,
+            "theta_change_deg": float(theta_changes[position]),
             "evaluated_theta_deg": float(evaluated_theta[position]),
             "original_phi_deg": float(original_phi[position]),
-            "phi_change_deg": phi_change,
+            "phi_change_deg": float(phi_changes[position]),
             "evaluated_phi_deg": float(evaluated_phi[position]),
         }
         for position in range(len(original_theta))
@@ -1018,7 +1027,10 @@ def _view_direction_change_statistics(
     return {
         "applied": applied,
         "num_cases": len(records_by_case) if applied else 0,
-        "num_perturbed_views": len(entries) if applied else 0,
+        "num_perturbed_views": sum(
+            e["theta_change_deg"] != 0.0 or e["phi_change_deg"] != 0.0
+            for e in entries
+        ) if applied else 0,
         "theta_change_deg": axis_statistics("theta_change_deg"),
         "phi_change_deg": axis_statistics("phi_change_deg"),
     }

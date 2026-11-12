@@ -211,7 +211,7 @@ def test_prediction_npz_uses_stable_volume_and_evaluation_fields(tmp_path):
         )
 
 
-def test_inaccurate_view_directions_recompute_both_camera_matrices_without_images():
+def test_inaccurate_view_directions_change_only_first_camera_without_images():
     geometry = ProjectionGeometry.from_angles(
         theta_deg=np.asarray([10.0, -20.0]),
         phi_deg=np.asarray([5.0, 15.0]),
@@ -223,7 +223,7 @@ def test_inaccurate_view_directions_recompute_both_camera_matrices_without_image
     sample = {
         "case_id": "17",
         "images": torch.arange(2 * 32 * 32, dtype=torch.float32).reshape(2, 1, 32, 32),
-        "view_indices": torch.tensor([0, 6]),
+        "view_indices": torch.tensor([6, 0]),
         "theta_deg": torch.from_numpy(geometry.theta_deg),
         "phi_deg": torch.from_numpy(geometry.phi_deg),
         "world2pix4x4": torch.from_numpy(geometry.world2pix4x4),
@@ -256,14 +256,15 @@ def test_inaccurate_view_directions_recompute_both_camera_matrices_without_image
     torch.testing.assert_close(evaluated["images"], original_images)
     torch.testing.assert_close(sample["world2pix4x4"], original_matrices)
     assert not torch.equal(evaluated["world2pix4x4"], original_matrices)
-    torch.testing.assert_close(evaluated["evaluated_theta_deg"], torch.tensor([15.0, -15.0]))
-    torch.testing.assert_close(evaluated["evaluated_phi_deg"], torch.tensor([3.0, 13.0]))
-    assert [record["selected_view_index"] for record in records] == [0, 6]
-    assert all(record["theta_change_deg"] == 5.0 for record in records)
-    assert all(record["phi_change_deg"] == -2.0 for record in records)
+    torch.testing.assert_close(evaluated["evaluated_theta_deg"], torch.tensor([15.0, -20.0]))
+    torch.testing.assert_close(evaluated["evaluated_phi_deg"], torch.tensor([3.0, 15.0]))
+    assert [record["selected_view_index"] for record in records] == [6, 0]
+    assert [r["theta_change_deg"] for r in records] == [5.0, 0.0]
+    assert torch.equal(evaluated["world2pix4x4"][1:], original_matrices[1:])
+    assert [r["phi_change_deg"] for r in records] == [-2.0, 0.0]
     statistics = _view_direction_change_statistics({"17": records}, applied=True)
-    assert statistics["num_perturbed_views"] == 2
-    assert statistics["theta_change_deg"]["mean_signed"] == 5.0
+    assert statistics["num_perturbed_views"] == 1
+    assert statistics["theta_change_deg"]["mean_signed"] == 2.5
 
 
 def test_paper_summary_reports_macro_standard_error_and_micro_dice():
@@ -564,7 +565,7 @@ def test_runner_writes_prediction_metrics_and_audit_manifests(
             "accurate": True,
             "theta_change_deg": 0.0,
             "phi_change_deg": 0.0,
-            "distribution": "fixed_per_view",
+            "distribution": "fixed_first_input_view",
             "model_interface": "world2pix4x4",
         },
         view_translation_options={

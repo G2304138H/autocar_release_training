@@ -241,3 +241,13 @@ angles. Existing prediction NPZ export is retained in separate
 prediction evaluator. The accurate paper-metric baseline is still required
 by default; run it separately or configure its summary path. The updated
 JSON template saves predictions and uses the four scalar levels.
+
+
+### First-input view-direction robustness
+
+View-direction errors now affect only the first selected input view, in the
+ordered input list (not necessarily source view index 0). Other cameras and
+all input masks remain unchanged. The scalar degree sweep adds the requested
+positive phi offset to that first camera. New sweep summaries record
+`perturbation_scope: first_input_view`. Use fresh output directories and rerun
+inference to replace older experiments that perturbed every selected view.

@@ -619,6 +619,7 @@ def run_view_direction_robustness(
         "plan": {
             "error_model": "fixed_magnitude_meridian_tilt" if plan["error_degrees"] is not None else "fixed_signed_theta_phi_grid",
             "error_degrees": plan["error_degrees"],
+            "perturbation_scope": "first_input_view",
             "model_interface": "world2pix4x4_recomputed_from_perturbed_angles",
             "images_changed": False,
             "both_selected_views_perturbed": True,
