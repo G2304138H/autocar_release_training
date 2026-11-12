@@ -1,0 +1,57 @@
+{
+  "artery_type": "lca",
+  "training_config": "/export/home2/reny0012/code/autocar_release_training/configs/experiment/stage2_npz_lca.yaml",
+  "experiment_dir": "/export/home2/reny0012/code/autocar_release_training/logs/train_autocar_lca/runs/2026-09-08_15-40-29",
+  "checkpoint_path": "/export/home2/reny0012/code/autocar_release_training/logs/train_autocar_lca/runs/2026-09-08_15-40-29/checkpoints/epoch_043.ckpt",
+  "checkpoint_choice": "best",
+  "projection_source": "/dataset/reny0012/vessel_code_stage_2_lca_paired/anchors",
+  "voxel_source": "/dataset/reny0012/imagecas_voxel/lca",
+  "split_json_path": "/export/home2/reny0012/result/vessel_trees/multi_branch_experiments/vggt_branch_prefix_lca_grouped_visibility_1to7_clinical_views_refiner_5mm/split.json",
+  "eval_output_dir": "/export/home2/reny0012/code/autocar_release_training/logs/train_autocar_lca/runs/2026-09-08_15-40-29/evaluation_view_error_fixed2",
+  "evaluation_mode": "inaccurate_view_direction",
+  "eval_split": "test",
+  "num_eval_cases": "all",
+  "eval_case_ids": null,
+  "eval_num_views": 2,
+  "eval_view_selection": "fixed",
+  "evaluation_view_indices": [
+    0,
+    1
+  ],
+  "evaluation_view_labels": [
+    "RAO 25, CAU 35",
+    "LAO 5, CAU 30"
+  ],
+  "case_id_mode": "imagecas_numeric",
+  "expected_imager_pixel_spacing_mm": 0.65,
+  "fallback_imager_pixel_spacing_mm": 0.65,
+  "fallback_sid_mm": 900.0,
+  "source_to_isocenter_mm": 750.0,
+  "save_prediction_npz_files": true,
+  "max_visualizations": 0,
+  "visualization_gif_frames": 24,
+  "visualization_gif_fps": 6,
+  "visualization_max_points": 20000,
+  "device": "auto",
+  "precision": "32",
+  "output_dtype": "float16",
+  "paper_metric_volume_threshold": 0.5,
+  "paper_metric_ssim_window_size": 7,
+  "ssim_chunk_depth": 8,
+  "ground_truth_origin_xyz_mm": null,
+  "overwrite": false,
+  "view_direction_robustness": {
+    "error_degrees": [
+      0.5,
+      1.0,
+      2.0,
+      4.0
+    ],
+    "visualization_conditions_deg": [],
+    "accurate_baseline_summary": null,
+    "require_accurate_baseline": false,
+    "record_paper_metrics": true,
+    "save_mask_npz_files": false,
+    "output_dir": null
+  }
+}
