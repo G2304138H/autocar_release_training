@@ -7,7 +7,7 @@
 #SBATCH -n 1
 #SBATCH -c 8
 
-# DeepCA: RCA and LCA, two input views, offsets 0.5/1/2/4 degrees.
+# DeepCA: RCA and LCA, two input views, first-input-only offsets 0.5/1/2/4 degrees.
 # Dice/clDice: raw-vessel tubes on the 0.5-mm grid.
 # CD/radius MAE v2: shared fair-comparison evaluator.
 # Requires both scripts/evaluate_deepca_view_error_all_metrics.sh and
@@ -20,13 +20,13 @@ cd /export/home2/reny0012/code/autocar_release_training
 
 export RAW_RCA=/dataset/reny0012/vessel_code/rca
 export RAW_LCA=/dataset/reny0012/vessel_code/lca
-export OUT=/export/home2/reny0012/code/autocar_release_training/logs/inaccurate_view_inspect_final
+export OUT="${OUT:-/export/home2/reny0012/code/autocar_release_training/logs/inaccurate_first_view_inspect_final}"
 export OPTIONS=/export/home2/reny0012/code/vessel_tree_generator/methods/fair_comparison/options.json
 export VESSEL_TREE_GENERATOR_ROOT=/export/home2/reny0012/code/vessel_tree_generator
 export PRED_ROOT="${PRED_ROOT:-/export/home2/reny0012/result/deepca_imagecas}"
 # Each root contains the four error_*deg directories; override at submission if needed.
-export RCA_EVAL_ROOT="${RCA_EVAL_ROOT:-$PRED_ROOT/rca/evaluation_inacc_view}"
-export LCA_EVAL_ROOT="${LCA_EVAL_ROOT:-$PRED_ROOT/lca/evaluation_inacc_view}"
+export RCA_EVAL_ROOT="${RCA_EVAL_ROOT:-$PRED_ROOT/rca/evaluation_inacc_first_view}"
+export LCA_EVAL_ROOT="${LCA_EVAL_ROOT:-$PRED_ROOT/lca/evaluation_inacc_first_view}"
 export PYTHON="$(command -v python)"
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"

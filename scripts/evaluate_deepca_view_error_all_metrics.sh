@@ -7,8 +7,8 @@ set -euo pipefail
 : "${OPTIONS:?Set OPTIONS to the shared fair-comparison options JSON}"
 : "${OUT:?Set OUT to the fair-comparison output root}"
 PRED_ROOT="${PRED_ROOT:-/export/home2/reny0012/result/deepca_imagecas}"
-RCA_EVAL_ROOT="${RCA_EVAL_ROOT:-$PRED_ROOT/rca/evaluation_inacc_view}"
-LCA_EVAL_ROOT="${LCA_EVAL_ROOT:-$PRED_ROOT/lca/evaluation_inacc_view}"
+RCA_EVAL_ROOT="${RCA_EVAL_ROOT:-$PRED_ROOT/rca/evaluation_inacc_first_view}"
+LCA_EVAL_ROOT="${LCA_EVAL_ROOT:-$PRED_ROOT/lca/evaluation_inacc_first_view}"
 PYTHON="${PYTHON:-python}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 overwrite_args=()
