@@ -1322,3 +1322,83 @@ python scripts/train_imagecas_npz.py \
   -- trainer.limit_train_batches=1 trainer.limit_val_batches=1 \
   trainer.num_sanity_val_steps=0 test=false
 ```
+
+
+## Joint RCA + LCA training
+
+A single AutoCAR model can be trained on both artery datasets because both use
+multi-view projections and voxel occupancy targets. Whether this improves
+reconstruction accuracy needs a controlled comparison against separate models.
+The joint experiment shares all model parameters; it does not require an artery
+indicator at inference. Each sample still describes one artery, not a combined
+RCA/LCA target volume.
+
+Use the existing CUDA training environment described in `requirements/README.md`,
+then run from the repository root:
+
+```bash
+python scripts/train_joint_imagecas_npz.py --preflight-only
+python scripts/train_joint_imagecas_npz.py -- trainer.max_epochs=200
+```
+
+The launcher preflights the exact resolved data configuration before training.
+It checks pairing and projection metadata for all effective split entries and
+loads one sample per artery/split. It does not perform a full GPU forward/backward
+or decode every target volume. For a GPU smoke run:
+
+```bash
+python scripts/train_joint_imagecas_npz.py -- debug=stage2_gpu
+```
+
+Configuration files: `configs/data/stage2_npz_joint.yaml` and
+`configs/experiment/stage2_npz_joint.yaml`. They inherit the current cluster paths
+and artery-specific settings. To use other locations, override each source:
+
+```bash
+python scripts/train_joint_imagecas_npz.py -- \
+  data.sources.rca.projection_source=/data/rca/projections \
+  data.sources.rca.voxel_source=/data/rca/voxels \
+  data.sources.rca.split_json=/data/rca/split.json \
+  data.sources.lca.projection_source=/data/lca/projections \
+  data.sources.lca.voxel_source=/data/lca/voxels \
+  data.sources.lca.split_json=/data/lca/split.json \
+  trainer.max_epochs=200
+```
+
+Defaults: two random training views with a minimum 30-degree separation, fixed
+artery-specific validation/test anchors, hourglass encoder, shared 1 mm
+reconstruction grid, batch size 1, accumulation over 4 batches, Adam at 3e-4,
+32-bit precision, and up to 200 epochs. The native target geometry is retained
+and aligned through the existing voxel-supervision path. The existing checkpoint
+and early-stopping callbacks monitor pooled `val/masked_dice_3d`; test runs on the
+best checkpoint. Each eligible artery/case appears once per shuffled epoch, so
+an artery with more cases has more influence. The same patient can contribute
+two samples within a split. Sample IDs are namespaced (`rca:42`, `lca:42`) and
+`patient_id` retains the physical numeric ID. Epoch-dependent view sampling and
+checkpoint-resume epoch propagation work across both component datasets.
+
+RCA keeps 0.55 mm detector spacing; LCA keeps 0.65 mm. The source-specific
+geometry fallbacks, anchor labels, and training exclusions are inherited.
+Do not merge the projection/voxel directories: their case numbers overlap.
+
+Splits are aligned by physical ImageCAS patient ID after source-specific training
+exclusions. If manifests disagree, `heldout_priority` assigns both arteries to
+the most conservative split: test > validation > training. This changes the
+original cohorts but prevents cross-artery patient leakage. Empty resulting
+splits raise an error. To require already consistent manifests instead, use
+`data.split_policy=strict`. For fair comparisons, train/evaluate the separate
+baselines using these same effective splits and the same reconstruction grid.
+
+Preflight writes `logs/joint_effective_splits.json` plus separate
+`logs/joint_effective_splits_rca.json` and `logs/joint_effective_splits_lca.json`.
+Use the separate manifests when evaluating each artery with the existing
+single-artery evaluation tools; do not revert to the original conflicting
+manifests. Report metrics separately for RCA and LCA as well as the pooled score.
+Use `--split-report /path/to/run/splits.json` to retain manifests for each run.
+
+Resume using `ckpt_path=/path/to/joint.ckpt` after `--`. A direct Hydra launch is
+also supported (without the launcher's preflight and split report):
+
+```bash
+python -m src.train experiment=stage2_npz_joint trainer.max_epochs=200
+```

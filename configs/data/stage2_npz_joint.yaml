@@ -1,0 +1,15 @@
+defaults:
+  - stage2_npz_rca@sources.rca
+  - stage2_npz_lca@sources.lca
+  - _self_
+
+_target_: src.dataset.joint_stage2_datamodule.JointStage2NPZDataModule
+_recursive_: false
+split_policy: heldout_priority
+batch_size: 1
+num_workers: 0
+random_seed: ${seed}
+min_train_views: 2
+max_train_views: 2
+minimum_train_pair_angle_deg: 30.0
+pin_memory: true

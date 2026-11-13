@@ -127,6 +127,10 @@ class Stage2NPZDataModule(LightningDataModule):
             self.excluded_train_case_ids,
             case_id_mode=self.case_id_mode,
         )
+        self._build_datasets(splits, stage)
+
+    def _build_datasets(self, splits, stage: str | None) -> None:
+        """Build loaders from already validated and filtered case splits."""
         common: dict[str, Any] = {
             "projection_source": self.projection_source,
             "voxel_source": self.voxel_source,

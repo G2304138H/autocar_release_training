@@ -28,6 +28,16 @@ python scripts/train_imagecas_npz.py --artery lca --preflight-only
 python scripts/train_imagecas_npz.py --artery rca --preflight-only
 ```
 
+Joint RCA + LCA training uses one model while retaining each artery's geometry:
+
+```bash
+python scripts/train_joint_imagecas_npz.py --preflight-only
+python scripts/train_joint_imagecas_npz.py -- trainer.max_epochs=200
+```
+
+See [joint training configuration and split rules](docs/NPZ_TRAINING.md#joint-rca--lca-training)
+for path overrides, smoke testing, and evaluation details.
+
 After accurate validation-plus-test paper metrics are available, run the fixed
 two-view positive-direction translational calibration stress test with:
 

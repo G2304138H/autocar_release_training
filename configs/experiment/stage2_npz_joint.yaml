@@ -1,0 +1,34 @@
+# @package _global_
+
+defaults:
+  - override /data: stage2_npz_joint
+  - override /model: autocar_npz
+
+task_name: train_autocar_joint
+tags: ["autocar", "stage2_npz", "rca", "lca", "joint", "voxel_supervision"]
+seed: 42
+test: true
+
+trainer:
+  min_epochs: 1
+  max_epochs: 200
+  check_val_every_n_epoch: 1
+  accumulate_grad_batches: 4
+  gradient_clip_val: 0.5
+  # spconv 2.3.8's FP16 implicit-GEMM tuner fails on the RTX 6000 Ada.
+  precision: 32-true
+
+callbacks:
+  model_checkpoint:
+    monitor: val/masked_dice_3d
+    mode: max
+  early_stopping:
+    monitor: val/masked_dice_3d
+    mode: max
+
+# One common reconstruction grid; native target volumes are aligned by the loss.
+# Start at 1 mm for the larger LCA trees and lower peak GPU memory.
+model:
+  recon_net:
+    ray_casting:
+      LODs: [1.0]

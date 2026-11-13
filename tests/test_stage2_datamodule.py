@@ -136,7 +136,7 @@ def test_train_loader_seeds_dataset_from_resumed_epoch(monkeypatch):
     )
     dataset = EpochDataset()
     datamodule.data_train = dataset
-    datamodule._trainer = SimpleNamespace(current_epoch=7)
+    datamodule.trainer = SimpleNamespace(current_epoch=7)
     sentinel = object()
     monkeypatch.setattr(datamodule, "_loader", lambda value, *, shuffle: sentinel)
 
